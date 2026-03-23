@@ -12,8 +12,8 @@ export const FREQUENCIES: Record<Frequency, number> = {
 
 export const DEFAULTS = {
   meta: {
-    brandName: '',
-    brokerName: '',
+    brandName: 'XYZ Finance Specialists',
+    brokerName: 'Jamie',
     propertyOneName: '',
     propertyTwoName: '',
   },
@@ -34,7 +34,7 @@ export const DEFAULTS = {
     repaymentFrequency: '' as Frequency | '',
     extraPrincipal: '',
     yearlyIncome: '',
-    livingExpensesMonthly: '',
+    livingExpensesMonthly: '3000',
   },
   twoProperties: {
     scenarioName: '',
@@ -82,7 +82,7 @@ export const DEFAULTS = {
     grossIncome2: '',
     rentalIncomeMonthly: '',
     otherIncomeAnnual: '',
-    livingExpensesMonthly: '',
+    livingExpensesMonthly: '3000',
     existingLoanRepaymentsMonthly: '',
     creditCardLimits: '',
     otherDebtsMonthly: '',

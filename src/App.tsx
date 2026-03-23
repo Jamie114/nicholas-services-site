@@ -9,7 +9,6 @@ import {
   amortizationInterestOverPeriod,
   formatMoney,
   formatPercent,
-  formatSignedMoney,
   fhogStatus,
   FREQUENCIES,
   getBankStyleHemMonthly,
@@ -174,7 +173,7 @@ function exportStyledPdfReport({
     doc.text('L', margin + 23, 81);
 
     doc.setFontSize(24);
-    doc.text(escapePdfText(brandName || 'Mortgage Workflow Dashboard'), margin + 58, 66);
+    doc.text(escapePdfText(brandName || 'XYZ Finance Specialists'), margin + 58, 66);
     doc.setFont('helvetica', 'normal');
     doc.setFontSize(10);
     doc.setTextColor(226, 232, 240);
@@ -922,8 +921,8 @@ const resetTab = (tabKey: 'one' | 'two' | 'refi' | 'borrow') => {
   };
 
   const exportCurrentPdf = () => {
-    const brand = meta.brandName || 'Mortgage Workflow Dashboard';
-    const broker = meta.brokerName || '';
+    const brand = meta.brandName || 'XYZ Finance Specialists';
+    const broker = meta.brokerName || 'Jamie';
     if (tab === 'one') {
       exportStyledPdfReport({
         brandName: brand,
@@ -960,10 +959,10 @@ const resetTab = (tabKey: 'one' | 'two' | 'refi' | 'borrow') => {
         reportTitle: '2 Properties Scenario Report',
         reportSubtitle: twoProperties.scenarioName || 'Untitled scenario',
         summaryCards: [
-          { label: 'Usable equity', value: twoCalc.payload['Usable equity'] ?? '-' },
-          { label: 'Cash needed', value: twoCalc.payload['Cash needed'] ?? '-' },
-          { label: 'Loan + LMI', value: twoCalc.payload['Loan + LMI'] ?? '-' },
-          { label: `Repayment / ${paymentLabel(('Monthly') as Frequency)}`, value: twoCalc.payload['Repayment'] ?? '-' },
+          { label: 'Usable equity', value: twoCalc.payload['Equity'] ?? '-' },
+          { label: 'Cash needed', value: twoCalc.payload['Out of pocket'] ?? '-' },
+          { label: 'Loan + LMI', value: twoCalc.payload['Loan plus LMI'] ?? '-' },
+          { label: 'Repayment / month', value: twoCalc.payload['Monthly PI total'] ?? '-' },
         ],
         sections: [
           { heading: 'Scenario inputs', rows: [
@@ -990,7 +989,7 @@ const resetTab = (tabKey: 'one' | 'two' | 'refi' | 'borrow') => {
         summaryCards: [
           { label: 'Current repayment', value: refiCalc.payload['Current repayment'] ?? '-' },
           { label: 'New repayment', value: refiCalc.payload['New repayment'] ?? '-' },
-          { label: 'Net upfront cost', value: refiCalc.payload['Net cost after cashback'] ?? '-' },
+          { label: 'Net upfront cost', value: refiCalc.payload['Net cost'] ?? '-' },
           { label: 'Break-even', value: refiCalc.payload['Break-even'] ?? '-' },
         ],
         sections: [
@@ -1087,7 +1086,7 @@ const resetTab = (tabKey: 'one' | 'two' | 'refi' | 'borrow') => {
       <div className="topbar">
         <div>
           <div className="eyebrow">V3.2 web rebuild</div>
-          <h1>{meta.brandName || 'Mortgage Workflow Dashboard'}</h1>
+          <h1>{meta.brandName || 'XYZ Finance Specialists'}</h1>
           <p>Modern broker-ready workflow with live calculations, compare slots, browser save state, and a stronger port of your desktop logic.</p>
         </div>
         <div className="header-badge">
