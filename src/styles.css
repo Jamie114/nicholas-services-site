@@ -107,3 +107,158 @@ button { cursor: pointer; }
 .toolbar-note { color:#64748b; font-size:.95rem; }
 
 .button-row { align-items: center; }
+
+
+.startup-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 23, 42, 0.56);
+  backdrop-filter: blur(6px);
+  display: grid;
+  place-items: center;
+  z-index: 999;
+  padding: 24px;
+}
+
+.startup-card {
+  width: min(620px, 100%);
+  background: #ffffff;
+  border-radius: 28px;
+  padding: 28px;
+  box-shadow: 0 28px 80px rgba(15, 23, 42, 0.28);
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  display: grid;
+  gap: 14px;
+}
+
+.startup-card h2 {
+  margin: 0;
+  font-size: clamp(1.35rem, 2vw, 1.9rem);
+  color: #172033;
+}
+
+.startup-card p {
+  margin: 0;
+  color: #475569;
+}
+
+.startup-field {
+  margin-bottom: 4px;
+}
+
+.startup-actions, .startup-menu {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.startup-link {
+  border: 0;
+  background: transparent;
+  padding: 0;
+  color: #2563eb;
+  text-decoration: underline;
+  width: fit-content;
+  font-size: 0.95rem;
+}
+
+.startup-profile-list, .profile-list {
+  display: grid;
+  gap: 10px;
+  margin-top: 16px;
+}
+
+.profile-list-title {
+  font-weight: 700;
+  color: #172033;
+}
+
+.profile-row,
+.startup-profile-row {
+  border: 1px solid #dbe4f0;
+  border-radius: 18px;
+  padding: 14px 16px;
+  background: #f8fafc;
+}
+
+.startup-profile-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  text-align: left;
+  width: 100%;
+}
+
+.startup-profile-row span {
+  display: grid;
+  gap: 4px;
+}
+
+.startup-profile-row small,
+.profile-meta {
+  color: #64748b;
+}
+
+.profile-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+}
+
+.profile-name {
+  font-weight: 700;
+  color: #172033;
+}
+
+.profile-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.ghost.danger {
+  color: #b91c1c;
+}
+
+@media (max-width: 900px) {
+  .startup-card {
+    padding: 22px;
+    border-radius: 22px;
+  }
+
+  .profile-row,
+  .startup-profile-row {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+}
+
+.profile-search-field {
+  margin-top: 12px;
+}
+
+.startup-profile-card {
+  display: grid;
+  gap: 10px;
+}
+
+.startup-profile-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.startup-profile-actions .secondary,
+.profile-actions .secondary,
+.profile-actions .ghost {
+  min-width: 88px;
+}
+
+@media (max-width: 700px) {
+  .startup-profile-actions,
+  .profile-actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
