@@ -334,9 +334,9 @@ export const scoreOnePropertyScenario = ({
 };
 
 export const buildOnePropertyRecommendations = ({
-  price, purchaseType, fhogBad, finalLoan, appliedLvr, lmi, oop, maxCashContribution, extraCash, affordabilityRatio, monthlyIncome, monthlyRepayment, bufferAfterHousing, useGuarantor, maxPurchaseMode,
+  price, purchaseType, fhogBad, finalLoan, lmi, oop, maxCashContribution, extraCash, affordabilityRatio, monthlyIncome, monthlyRepayment, bufferAfterHousing, useGuarantor, maxPurchaseMode,
 }: {
-  price: number; purchaseType: PurchaseType; fhogBad: boolean; finalLoan: number; appliedLvr: number; lmi: number; oop: number; maxCashContribution: number; extraCash: number; affordabilityRatio?: number; monthlyIncome: number; monthlyRepayment: number; bufferAfterHousing?: number; useGuarantor: boolean; maxPurchaseMode: boolean;
+  price: number; purchaseType: PurchaseType; fhogBad: boolean; finalLoan: number; lmi: number; oop: number; maxCashContribution: number; extraCash: number; affordabilityRatio?: number; monthlyIncome: number; monthlyRepayment: number; bufferAfterHousing?: number; useGuarantor: boolean; maxPurchaseMode: boolean;
 }): string[] => {
   const cfg = PURCHASE_TYPES[purchaseType];
   const actions: string[] = [];
@@ -640,7 +640,7 @@ export const calcOneProperty = (inputs: OnePropertyInputs) => {
       { label: 'Out of pocket', value: formatMoney(oop), tone: maxCashContribution > 0 && oop > maxCashContribution ? 'warn' : 'good' as AlertTone },
       { label: 'Loan amount', value: formatMoney(finalLoan), tone: 'info' as AlertTone },
       { label: 'Effective LVR', value: formatPercent(effectiveLvr), tone: toneFromLvr(effectiveLvr) },
-      { label: 'Structure', value: deal.text, tone: deal.tone as AlertTone },
+      { label: 'Structure', value: recommendation.title, tone: recommendation.tone as AlertTone },
       { label: `Repayment / ${paymentLabel(frequency)}`, value: formatMoney(repayment), tone: affordabilityRatio !== undefined && affordabilityRatio > 0.4 ? 'bad' : affordabilityRatio !== undefined && affordabilityRatio > 0.3 ? 'warn' : 'good' as AlertTone },
     ],
     decisionGuide: [

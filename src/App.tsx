@@ -8,7 +8,6 @@ import {
   calcBorrowing,
   calcOneProperty,
   calcRefinance,
-  formatMoney,
   type AlertTone,
   type ApplicantType,
   type BorrowingInputs,
@@ -30,19 +29,9 @@ type SavedState = {
   refi: RefinanceInputs;
   borrow: BorrowingInputs;
   compare: Record<CompareSlot, { title: string; body: string[] } | null>;
-  caseName?: string;
 };
 
 const STORAGE_KEY = 'loan-web-v34';
-const PROFILE_STORAGE_KEY = 'loan-web-profiles-v36';
-
-type LocalProfile = {
-  id: string;
-  brokerName: string;
-  caseName: string;
-  savedAt: string;
-  state: SavedState;
-};
 const TAB_KEYS: Array<{ key: TabKey; label: string }> = [
   { key: 'home', label: 'Home' },
   { key: 'one', label: '1 Property' },
@@ -60,7 +49,6 @@ const blankState = (): SavedState => ({
   refi: { ...DEFAULTS.refinance },
   borrow: { ...DEFAULTS.borrowing },
   compare: { A: null, B: null, C: null },
-  caseName: '',
 });
 
 const field = <T extends string | boolean>(
@@ -92,23 +80,6 @@ const field = <T extends string | boolean>(
     </label>
   );
 };
-
-const niceNow = () => new Date().toISOString();
-const makeProfileId = () => `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-
-function getStoredProfiles(): LocalProfile[] {
-  try {
-    const raw = localStorage.getItem(PROFILE_STORAGE_KEY);
-    const parsed = raw ? JSON.parse(raw) : [];
-    return Array.isArray(parsed) ? parsed : [];
-  } catch {
-    return [];
-  }
-}
-
-function saveStoredProfiles(profiles: LocalProfile[]) {
-  localStorage.setItem(PROFILE_STORAGE_KEY, JSON.stringify(profiles));
-}
 
 function Banner({ tone, lines }: { tone: AlertTone; lines: string[] }) {
   return (
@@ -271,21 +242,10 @@ function App() {
     }
   });
   const [tab, setTab] = useState<TabKey>('one');
-  const [brokerDraft, setBrokerDraft] = useState(state.meta.brokerName || '');
-  const [startupStep, setStartupStep] = useState<'broker' | 'brokerMenu' | 'brokerLoad' | 'ready'>(
-    state.meta.brokerName ? 'ready' : 'broker',
-  );
-  const [profiles, setProfiles] = useState<LocalProfile[]>(() => getStoredProfiles());
-  const [profileNameDraft, setProfileNameDraft] = useState(state.caseName || '');
-  const [profileSearch, setProfileSearch] = useState('');
 
   useEffect(() => {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
   }, [state]);
-
-  useEffect(() => {
-    setProfiles(getStoredProfiles());
-  }, []);
 
   const oneCalc = useMemo(() => calcOneProperty(state.one), [state.one]);
   const refiCalc = useMemo(() => calcRefinance(state.refi), [state.refi]);
@@ -301,137 +261,6 @@ function App() {
     patch('borrow', { ...state.borrow, [key]: value });
   const patchMeta = <K extends keyof typeof DEFAULTS.meta>(key: K, value: (typeof DEFAULTS.meta)[K]) =>
     patch('meta', { ...state.meta, [key]: value });
-
-  const brokerProfiles = profiles
-    .filter((profile) => profile.brokerName === (state.meta.brokerName || ''))
-    .filter((profile) => {
-      const q = profileSearch.trim().toLowerCase();
-      if (!q) return true;
-      return (
-        profile.caseName.toLowerCase().includes(q) ||
-        profile.savedAt.toLowerCase().includes(q)
-      );
-    })
-    .sort((a, b) => (a.savedAt < b.savedAt ? 1 : -1));
-
-  const enterBrokerMode = () => {
-    const brokerName = brokerDraft.trim();
-    if (!brokerName) return;
-    setState((prev) => ({ ...prev, meta: { ...prev.meta, brokerName } }));
-    setStartupStep('brokerMenu');
-    setProfileSearch('');
-  };
-
-  const continueAsGuest = () => {
-    setState((prev) => ({ ...prev, meta: { ...prev.meta, brokerName: 'Guest' } }));
-    setBrokerDraft('Guest');
-    setProfileSearch('');
-    setStartupStep('ready');
-  };
-
-  const createNewCase = () => {
-    const brokerName = state.meta.brokerName || brokerDraft.trim() || 'Guest';
-    const fresh = blankState();
-    fresh.meta.brandName = state.meta.brandName;
-    fresh.meta.propertyOneName = state.meta.propertyOneName;
-    fresh.meta.propertyTwoName = state.meta.propertyTwoName;
-    fresh.meta.brokerName = brokerName;
-    setState(fresh);
-    setProfileNameDraft('');
-    setProfileSearch('');
-    setTab('one');
-    setStartupStep('ready');
-  };
-
-  const loadProfileById = (id: string) => {
-    const profile = profiles.find((item) => item.id === id);
-    if (!profile) return;
-    const next = { ...blankState(), ...profile.state, caseName: profile.caseName };
-    next.meta = { ...blankState().meta, ...profile.state.meta, brokerName: profile.brokerName };
-    setState(next);
-    setBrokerDraft(profile.brokerName);
-    setProfileNameDraft(profile.caseName || '');
-    setProfileSearch('');
-    setTab('one');
-    setStartupStep('ready');
-  };
-
-  const saveProfiles = (next: LocalProfile[]) => {
-    setProfiles(next);
-    saveStoredProfiles(next);
-  };
-
-  const saveToProfile = () => {
-    if ((state.meta.brokerName || '') === 'Guest') return;
-    const brokerName = (state.meta.brokerName || '').trim();
-    if (!brokerName) return;
-    const caseName = (
-      profileNameDraft ||
-      state.caseName ||
-      state.one.scenarioName ||
-      state.refi.scenarioName ||
-      state.borrow.scenarioName ||
-      'Untitled Case'
-    ).trim();
-    const profile: LocalProfile = {
-      id: makeProfileId(),
-      brokerName,
-      caseName,
-      savedAt: niceNow(),
-      state: { ...state, caseName },
-    };
-    const next = [
-      profile,
-      ...profiles.filter((item) => !(item.brokerName === brokerName && item.caseName === caseName))
-    ];
-    saveProfiles(next);
-    setState((prev) => ({ ...prev, caseName }));
-    setProfileNameDraft(caseName);
-  };
-
-  const deleteProfileById = (id: string) => {
-    const next = profiles.filter((profile) => profile.id !== id);
-    saveProfiles(next);
-  };
-
-  const renameProfileById = (id: string) => {
-    const profile = profiles.find((item) => item.id === id);
-    if (!profile) return;
-    const nextName = window.prompt('Rename saved case', profile.caseName)?.trim();
-    if (!nextName) return;
-    const next = profiles.map((item) =>
-      item.id === id
-        ? { ...item, caseName: nextName, savedAt: niceNow(), state: { ...item.state, caseName: nextName } }
-        : item,
-    );
-    saveProfiles(next);
-    if (state.caseName === profile.caseName && state.meta.brokerName === profile.brokerName) {
-      setState((prev) => ({ ...prev, caseName: nextName }));
-      setProfileNameDraft(nextName);
-    }
-  };
-
-  const duplicateProfileById = (id: string) => {
-    const profile = profiles.find((item) => item.id === id);
-    if (!profile) return;
-    const nextName = window.prompt('Duplicate case as', `${profile.caseName} Copy`)?.trim();
-    if (!nextName) return;
-    const duplicate: LocalProfile = {
-      ...profile,
-      id: makeProfileId(),
-      caseName: nextName,
-      savedAt: niceNow(),
-      state: { ...profile.state, caseName: nextName },
-    };
-    saveProfiles([duplicate, ...profiles]);
-  };
-
-  const changeBroker = () => {
-    setBrokerDraft('');
-    setProfileSearch('');
-    setState((prev) => ({ ...prev, meta: { ...prev.meta, brokerName: '' } }));
-    setStartupStep('broker');
-  };
 
   const saveJson = (name: string, payload: unknown) => {
     const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
@@ -460,7 +289,7 @@ function App() {
   const loadTab = (key: 'one' | 'refi' | 'borrow') =>
     loadJson((data) => patch(key, { ...state[key], ...data } as any));
   const saveWhole = () => saveJson('loan-web-whole.json', state);
-  const loadWhole = () => loadJson((data) => { const next = { ...blankState(), ...data }; setState(next); setProfileNameDraft(next.caseName || ''); });
+  const loadWhole = () => loadJson((data) => setState({ ...blankState(), ...data }));
 
   const exportPdfStyled = ({
     title,
@@ -482,8 +311,6 @@ function App() {
     detailTop?: Array<{ label: string; value: string }>;
   }) => {
     const doc = new jsPDF({ unit: 'mm', format: 'a4' });
-    const pageW = 210;
-    const pageH = 297;
     const left = 14;
     const right = 196;
     let y = 18;
@@ -949,11 +776,10 @@ function App() {
   const renderSettings = () => (
     <div className="grid two-col">
       <section className="panel">
-        <h2>Branding, Profiles & Defaults</h2>
+        <h2>Branding & Defaults</h2>
         <div className="field-grid">
           {field('Brand name', state.meta.brandName, (v) => patchMeta('brandName', v as string))}
-          <label className="field"><span>Broker name</span><input type="text" value={state.meta.brokerName} readOnly /></label>
-          {field('Local profile case name', profileNameDraft, (v) => setProfileNameDraft(v as string))}
+          {field('Broker name', state.meta.brokerName, (v) => patchMeta('brokerName', v as string))}
           {field('Property one name', state.meta.propertyOneName, (v) => patchMeta('propertyOneName', v as string))}
           {field('Property two name', state.meta.propertyTwoName, (v) => patchMeta('propertyTwoName', v as string))}
         </div>
@@ -962,54 +788,22 @@ function App() {
           <button className="secondary" onClick={loadWhole}>
             Load whole file
           </button>
-          {state.meta.brokerName !== 'Guest' && (
-            <button className="secondary" onClick={saveToProfile}>
-              Save to Profile
-            </button>
-          )}
-          <button className="secondary" onClick={changeBroker}>
-            Change Broker / Guest
-          </button>
-          <button className="secondary" onClick={() => { setState(blankState()); setProfileNameDraft(''); setBrokerDraft(''); setStartupStep('broker'); }}>
+          <button className="secondary" onClick={() => setState(blankState())}>
             Reset everything
           </button>
         </div>
-        {state.meta.brokerName !== 'Guest' && (
-          <div className="profile-list">
-            <div className="profile-list-title">Saved local profiles for {state.meta.brokerName || 'Broker'}</div>
-            <label className="field profile-search-field">
-              <span>Search saved cases</span>
-              <input type="text" value={profileSearch} onChange={(e) => setProfileSearch(e.target.value)} placeholder="Search by case name..." />
-            </label>
-            {brokerProfiles.length ? brokerProfiles.map((profile) => (
-              <div className="profile-row" key={profile.id}>
-                <div>
-                  <div className="profile-name">{profile.caseName}</div>
-                  <div className="profile-meta">{new Date(profile.savedAt).toLocaleString()}</div>
-                </div>
-                <div className="profile-actions">
-                  <button className="secondary" onClick={() => loadProfileById(profile.id)}>Load</button>
-                  <button className="secondary" onClick={() => renameProfileById(profile.id)}>Rename</button>
-                  <button className="secondary" onClick={() => duplicateProfileById(profile.id)}>Duplicate</button>
-                  <button className="ghost danger" onClick={() => deleteProfileById(profile.id)}>Delete</button>
-                </div>
-              </div>
-            )) : <div className="muted">No local profiles matched for this broker yet.</div>}
-          </div>
-        )}
       </section>
       <section className="panel">
         <h2>Deployment notes</h2>
         <ul className="feature-list">
           <li>After changing files, test locally with <code>npm run dev</code>.</li>
           <li>Then push to GitHub and run <code>npm run deploy</code> for the gh-pages branch.</li>
-          <li>Guest mode skips broker profile storage, but manual tab and file save/load still work.</li>
+          <li>The app stores brand name, broker name, and tab values in browser storage until you reset them.</li>
         </ul>
         <p className="muted">{DISCLAIMER}</p>
       </section>
     </div>
   );
-
 
   return (
     <div className="app-shell">
@@ -1019,7 +813,7 @@ function App() {
           <h1>{state.meta.brandName || 'XYZ Finance Specialists'}</h1>
           <p>Live GitHub-hosted calculator with per-tab save/load, branded PDFs, and parity-focused summary blocks.</p>
         </div>
-        <div className="header-badge">Broker: {state.meta.brokerName || '—'}</div>
+        <div className="header-badge">Broker: {state.meta.brokerName || 'Jamie'}</div>
       </header>
 
       <nav className="tabs">
@@ -1044,102 +838,6 @@ function App() {
         {tab === 'compare' && renderCompare()}
         {tab === 'settings' && renderSettings()}
       </main>
-
-      {startupStep !== 'ready' && (
-        <div className="startup-overlay">
-          <div className="startup-card">
-            {startupStep === 'broker' && (
-              <>
-                <div className="eyebrow">Welcome</div>
-                <h2>Please enter Broker Name before proceeding</h2>
-                <p>
-                  Broker mode gives access to local saved profiles. Guest mode skips profile storage but still allows manual save/load in the tabs.
-                </p>
-                <label className="field startup-field">
-                  <span>Broker Name</span>
-                  <input
-                    autoFocus
-                    type="text"
-                    value={brokerDraft}
-                    onChange={(e) => setBrokerDraft(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter' && brokerDraft.trim()) enterBrokerMode();
-                    }}
-                  />
-                </label>
-                <div className="startup-actions">
-                  <button onClick={enterBrokerMode} disabled={!brokerDraft.trim()}>
-                    Continue
-                  </button>
-                </div>
-                <button className="startup-link" onClick={continueAsGuest}>
-                  Continue as Guest
-                </button>
-              </>
-            )}
-
-            {startupStep === 'brokerMenu' && (
-              <>
-                <div className="eyebrow">Welcome, {state.meta.brokerName}</div>
-                <h2>Choose how you’d like to continue</h2>
-                <div className="startup-menu">
-                  <button onClick={createNewCase}>Create New Case</button>
-                  <button className="secondary" onClick={() => setStartupStep('brokerLoad')}>
-                    Load Saved Case
-                  </button>
-                </div>
-                <button className="startup-link" onClick={changeBroker}>
-                  Use a different broker name
-                </button>
-              </>
-            )}
-
-            {startupStep === 'brokerLoad' && (
-              <>
-                <div className="eyebrow">Saved local profiles</div>
-                <h2>Load Saved Case</h2>
-                <label className="field startup-field">
-                  <span>Search saved cases</span>
-                  <input
-                    type="text"
-                    value={profileSearch}
-                    onChange={(e) => setProfileSearch(e.target.value)}
-                    placeholder="Search by case name..."
-                  />
-                </label>
-                {brokerProfiles.length ? (
-                  <div className="startup-profile-list">
-                    {brokerProfiles.map((profile) => (
-                      <div className="startup-profile-card" key={profile.id}>
-                        <button className="startup-profile-row" onClick={() => loadProfileById(profile.id)}>
-                          <span>
-                            <strong>{profile.caseName}</strong>
-                            <small>{new Date(profile.savedAt).toLocaleString()}</small>
-                          </span>
-                          <span>Load</span>
-                        </button>
-                        <div className="startup-profile-actions">
-                          <button className="secondary" onClick={() => renameProfileById(profile.id)}>Rename</button>
-                          <button className="secondary" onClick={() => duplicateProfileById(profile.id)}>Duplicate</button>
-                          <button className="ghost danger" onClick={() => deleteProfileById(profile.id)}>Delete</button>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                ) : (
-                  <p className="muted">No local profiles matched for {state.meta.brokerName} yet.</p>
-                )}
-                <div className="startup-menu">
-                  <button onClick={createNewCase}>Create New Case</button>
-                  <button className="secondary" onClick={() => setStartupStep('brokerMenu')}>
-                    Back
-                  </button>
-                </div>
-              </>
-            )}
-          </div>
-        </div>
-      )}
     </div>
   );
 }
