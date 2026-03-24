@@ -545,7 +545,6 @@ export const calcOneProperty = (inputs: OnePropertyInputs) => {
     purchaseType,
     fhogBad,
     finalLoan,
-    appliedLvr,
     lmi,
     oop,
     maxCashContribution,
@@ -640,7 +639,7 @@ export const calcOneProperty = (inputs: OnePropertyInputs) => {
       { label: 'Out of pocket', value: formatMoney(oop), tone: maxCashContribution > 0 && oop > maxCashContribution ? 'warn' : 'good' as AlertTone },
       { label: 'Loan amount', value: formatMoney(finalLoan), tone: 'info' as AlertTone },
       { label: 'Effective LVR', value: formatPercent(effectiveLvr), tone: toneFromLvr(effectiveLvr) },
-      { label: 'Structure', value: recommendation.title, tone: recommendation.tone as AlertTone },
+      { label: 'Structure', value: deal.text, tone: deal.tone as AlertTone },
       { label: `Repayment / ${paymentLabel(frequency)}`, value: formatMoney(repayment), tone: affordabilityRatio !== undefined && affordabilityRatio > 0.4 ? 'bad' : affordabilityRatio !== undefined && affordabilityRatio > 0.3 ? 'warn' : 'good' as AlertTone },
     ],
     decisionGuide: [
