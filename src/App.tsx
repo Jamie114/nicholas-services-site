@@ -1,5 +1,6 @@
 
 import { useEffect, useMemo, useState } from 'react';
+import { supabase, supabaseEnabled, type AuthUser } from './supabaseClient';
 import { jsPDF } from 'jspdf';
 import './styles.css';
 import {
@@ -37,13 +38,17 @@ type SavedState = {
 const STORAGE_KEY = 'loan-web-v34';
 const PROFILE_STORAGE_KEY = 'loan-web-profiles-v36';
 
-type LocalProfile = {
+type StartupStep = 'auth' | 'brokerMenu' | 'brokerLoad' | 'ready';
+
+type SavedProfile = {
   id: string;
   brokerName: string;
   caseName: string;
   savedAt: string;
   state: SavedState;
+  source: 'local' | 'cloud';
 };
+
 const TAB_KEYS: Array<{ key: TabKey; label: string }> = [
   { key: 'home', label: 'Home' },
   { key: 'one', label: '1 Property' },
@@ -97,7 +102,21 @@ const field = <T extends string | boolean>(
 const niceNow = () => new Date().toISOString();
 const makeProfileId = () => `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
-function getStoredProfiles(): LocalProfile[] {
+const brokerNameFromUser = (user: AuthUser | null, fallback = 'Broker') => {
+  const fullName =
+    String(user?.user_metadata?.full_name || user?.user_metadata?.name || '').trim();
+  if (fullName) return fullName;
+  const email = String(user?.email || '').trim().toLowerCase();
+  if (!email) return fallback;
+  const local = email.split('@')[0] || fallback;
+  return local
+    .split(/[._-]+/)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(' ');
+};
+
+function getStoredProfiles(): SavedProfile[] {
   try {
     const raw = localStorage.getItem(PROFILE_STORAGE_KEY);
     const parsed = raw ? JSON.parse(raw) : [];
@@ -107,7 +126,7 @@ function getStoredProfiles(): LocalProfile[] {
   }
 }
 
-function saveStoredProfiles(profiles: LocalProfile[]) {
+function saveStoredProfiles(profiles: SavedProfile[]) {
   localStorage.setItem(PROFILE_STORAGE_KEY, JSON.stringify(profiles));
 }
 
@@ -290,13 +309,16 @@ function App() {
     }
   });
   const [tab, setTab] = useState<TabKey>('one');
-  const [brokerDraft, setBrokerDraft] = useState(state.meta.brokerName || '');
-  const [startupStep, setStartupStep] = useState<'broker' | 'brokerMenu' | 'brokerLoad' | 'ready'>(
-    state.meta.brokerName ? 'ready' : 'broker',
-  );
-  const [profiles, setProfiles] = useState<LocalProfile[]>(() => getStoredProfiles());
+  const [startupStep, setStartupStep] = useState<StartupStep>('auth');
+  const [profiles, setProfiles] = useState<SavedProfile[]>(() => getStoredProfiles());
   const [profileNameDraft, setProfileNameDraft] = useState(state.caseName || '');
   const [profileSearch, setProfileSearch] = useState('');
+  const [authEmail, setAuthEmail] = useState('');
+  const [authPassword, setAuthPassword] = useState('');
+  const [authBusy, setAuthBusy] = useState(false);
+  const [authMessage, setAuthMessage] = useState('');
+  const [currentUser, setCurrentUser] = useState<AuthUser | null>(null);
+  const [storageMode, setStorageMode] = useState<'cloud' | 'local'>(supabaseEnabled ? 'cloud' : 'local');
 
   useEffect(() => {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
@@ -304,6 +326,82 @@ function App() {
 
   useEffect(() => {
     setProfiles(getStoredProfiles());
+  }, []);
+
+  const refreshProfiles = async (userOverride?: AuthUser | null) => {
+    const user = userOverride === undefined ? currentUser : userOverride;
+    if (supabaseEnabled && user) {
+      const { data, error } = await supabase
+        .from('broker_cases')
+        .select('id, case_name, app_state, updated_at')
+        .eq('owner_id', user.id)
+        .order('updated_at', { ascending: false });
+
+      if (!error && Array.isArray(data)) {
+        const next: SavedProfile[] = data.map((row: any) => ({
+          id: row.id,
+          brokerName: brokerNameFromUser(user),
+          caseName: row.case_name || 'Untitled Case',
+          savedAt: row.updated_at || niceNow(),
+          state: { ...blankState(), ...(row.app_state || {}), caseName: row.case_name || 'Untitled Case' },
+          source: 'cloud',
+        }));
+        setProfiles(next);
+        return;
+      }
+      setAuthMessage(error?.message || 'Cloud case sync failed. Falling back to local storage.');
+    }
+    setProfiles(getStoredProfiles());
+  };
+
+  useEffect(() => {
+    let active = true;
+
+    if (!supabaseEnabled) {
+      setStorageMode('local');
+      setStartupStep(state.meta.brokerName ? 'brokerMenu' : 'auth');
+      return () => {
+        active = false;
+      };
+    }
+
+    supabase.auth.getSession().then(({ data, error }) => {
+      if (!active) return;
+      const user = data.session?.user ?? null;
+      setCurrentUser(user);
+      setStorageMode(user ? 'cloud' : 'local');
+      if (user) {
+        const brokerName = brokerNameFromUser(user);
+        setState((prev) => ({ ...prev, meta: { ...prev.meta, brokerName } }));
+        setStartupStep('brokerMenu');
+        void refreshProfiles(user);
+      } else {
+        setStartupStep('auth');
+      }
+      if (error) setAuthMessage(error.message);
+    });
+
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((_event, session) => {
+      if (!active) return;
+      const user = session?.user ?? null;
+      setCurrentUser(user);
+      setStorageMode(user ? 'cloud' : 'local');
+      if (user) {
+        const brokerName = brokerNameFromUser(user);
+        setState((prev) => ({ ...prev, meta: { ...prev.meta, brokerName } }));
+        setStartupStep('brokerMenu');
+        void refreshProfiles(user);
+      } else {
+        setStartupStep('auth');
+      }
+    });
+
+    return () => {
+      active = false;
+      subscription.unsubscribe();
+    };
   }, []);
 
   const oneCalc = useMemo(() => calcOneProperty(state.one), [state.one]);
@@ -325,34 +423,85 @@ function App() {
     patch('meta', { ...state.meta, [key]: value });
 
   const brokerProfiles = profiles
-    .filter((profile) => profile.brokerName === (state.meta.brokerName || ''))
+    .filter((profile) => {
+      if (profile.source === 'cloud') return true;
+      return profile.brokerName === (state.meta.brokerName || '');
+    })
     .filter((profile) => {
       const q = profileSearch.trim().toLowerCase();
       if (!q) return true;
-      return (
-        profile.caseName.toLowerCase().includes(q) ||
-        profile.savedAt.toLowerCase().includes(q)
-      );
+      return profile.caseName.toLowerCase().includes(q) || profile.savedAt.toLowerCase().includes(q);
     })
     .sort((a, b) => (a.savedAt < b.savedAt ? 1 : -1));
 
-  const enterBrokerMode = () => {
-    const brokerName = brokerDraft.trim();
-    if (!brokerName) return;
-    setState((prev) => ({ ...prev, meta: { ...prev.meta, brokerName } }));
-    setStartupStep('brokerMenu');
-    setProfileSearch('');
+  const handleAuthSubmit = async () => {
+    if (!supabaseEnabled) {
+      setAuthMessage('Supabase is not configured yet. Use guest mode for tonight or add the VITE_SUPABASE_* values and redeploy.');
+      return;
+    }
+    const email = authEmail.trim();
+    const password = authPassword.trim();
+    if (!email || !password) {
+      setAuthMessage('Please enter both email and password.');
+      return;
+    }
+
+    setAuthBusy(true);
+    setAuthMessage('');
+    try {
+      const { error } = await supabase.auth.signInWithPassword({ email, password });
+      if (error) throw error;
+      setAuthMessage('Signed in.');
+    } catch (error: any) {
+      setAuthMessage(error?.message || 'Authentication failed.');
+    } finally {
+      setAuthBusy(false);
+    }
+  };
+
+  const handleCreateOwnerAccount = async () => {
+    if (!supabaseEnabled) {
+      setAuthMessage('Supabase is not configured yet. Use guest mode for tonight or add the VITE_SUPABASE_* values and redeploy.');
+      return;
+    }
+    const email = authEmail.trim();
+    const password = authPassword.trim();
+    if (!email || !password) {
+      setAuthMessage('Please enter both email and password.');
+      return;
+    }
+
+    setAuthBusy(true);
+    setAuthMessage('');
+    try {
+      const { error } = await supabase.auth.signUp({
+        email,
+        password,
+        options: {
+          data: {
+            name: email.split('@')[0],
+          },
+        },
+      });
+      if (error) throw error;
+      setAuthMessage('Owner account created. Turn signups off again in Supabase, then sign in.');
+    } catch (error: any) {
+      setAuthMessage(error?.message || 'Owner account creation failed.');
+    } finally {
+      setAuthBusy(false);
+    }
   };
 
   const continueAsGuest = () => {
+    setCurrentUser(null);
+    setStorageMode('local');
     setState((prev) => ({ ...prev, meta: { ...prev.meta, brokerName: 'Guest' } }));
-    setBrokerDraft('Guest');
     setProfileSearch('');
     setStartupStep('ready');
   };
 
   const createNewCase = () => {
-    const brokerName = state.meta.brokerName || brokerDraft.trim() || 'Guest';
+    const brokerName = currentUser ? brokerNameFromUser(currentUser) : state.meta.brokerName || 'Guest';
     const fresh = blankState();
     fresh.meta.brandName = state.meta.brandName;
     fresh.meta.propertyOneName = state.meta.propertyOneName;
@@ -371,88 +520,158 @@ function App() {
     const next = { ...blankState(), ...profile.state, caseName: profile.caseName };
     next.meta = { ...blankState().meta, ...profile.state.meta, brokerName: profile.brokerName };
     setState(next);
-    setBrokerDraft(profile.brokerName);
     setProfileNameDraft(profile.caseName || '');
     setProfileSearch('');
     setTab('one');
     setStartupStep('ready');
   };
 
-  const saveProfiles = (next: LocalProfile[]) => {
+  const saveProfilesLocal = (next: SavedProfile[]) => {
     setProfiles(next);
-    saveStoredProfiles(next);
+    saveStoredProfiles(next.filter((item) => item.source === 'local'));
   };
 
-  const saveToProfile = () => {
-    if ((state.meta.brokerName || '') === 'Guest') return;
-    const brokerName = (state.meta.brokerName || '').trim();
-    if (!brokerName) return;
+  const saveToProfile = async () => {
     const caseName = (
       profileNameDraft ||
       state.caseName ||
       state.one.scenarioName ||
+      state.two.scenarioName ||
       state.refi.scenarioName ||
       state.borrow.scenarioName ||
       'Untitled Case'
     ).trim();
-    const profile: LocalProfile = {
+
+    const nextState = { ...state, caseName };
+
+    if (supabaseEnabled && currentUser) {
+      const { error } = await supabase.from('broker_cases').upsert(
+        {
+          owner_id: currentUser.id,
+          case_name: caseName,
+          app_state: nextState,
+          updated_at: niceNow(),
+        },
+        { onConflict: 'owner_id,case_name' },
+      );
+      if (error) {
+        setAuthMessage(error.message || 'Cloud save failed.');
+        return;
+      }
+      setState((prev) => ({ ...prev, caseName }));
+      setProfileNameDraft(caseName);
+      await refreshProfiles(currentUser);
+      return;
+    }
+
+    if ((state.meta.brokerName || '') === 'Guest') return;
+    const brokerName = (state.meta.brokerName || '').trim() || 'Guest';
+    const profile: SavedProfile = {
       id: makeProfileId(),
       brokerName,
       caseName,
       savedAt: niceNow(),
-      state: { ...state, caseName },
+      state: nextState,
+      source: 'local',
     };
-    const next = [
-      profile,
-      ...profiles.filter((item) => !(item.brokerName === brokerName && item.caseName === caseName))
-    ];
-    saveProfiles(next);
+    const next = [profile, ...profiles.filter((item) => !(item.source === 'local' && item.brokerName === brokerName && item.caseName === caseName))];
+    saveProfilesLocal(next);
     setState((prev) => ({ ...prev, caseName }));
     setProfileNameDraft(caseName);
   };
 
-  const deleteProfileById = (id: string) => {
+  const deleteProfileById = async (id: string) => {
+    const profile = profiles.find((item) => item.id === id);
+    if (!profile) return;
+    if (profile.source === 'cloud' && supabaseEnabled && currentUser) {
+      const { error } = await supabase.from('broker_cases').delete().eq('id', id).eq('owner_id', currentUser.id);
+      if (error) {
+        setAuthMessage(error.message || 'Delete failed.');
+        return;
+      }
+      await refreshProfiles(currentUser);
+      return;
+    }
     const next = profiles.filter((profile) => profile.id !== id);
-    saveProfiles(next);
+    saveProfilesLocal(next);
   };
 
-  const renameProfileById = (id: string) => {
+  const renameProfileById = async (id: string) => {
     const profile = profiles.find((item) => item.id === id);
     if (!profile) return;
     const nextName = window.prompt('Rename saved case', profile.caseName)?.trim();
     if (!nextName) return;
+
+    if (profile.source === 'cloud' && supabaseEnabled && currentUser) {
+      const { error } = await supabase
+        .from('broker_cases')
+        .update({ case_name: nextName, updated_at: niceNow(), app_state: { ...profile.state, caseName: nextName } })
+        .eq('id', id)
+        .eq('owner_id', currentUser.id);
+      if (error) {
+        setAuthMessage(error.message || 'Rename failed.');
+        return;
+      }
+      if (state.caseName === profile.caseName) {
+        setState((prev) => ({ ...prev, caseName: nextName }));
+        setProfileNameDraft(nextName);
+      }
+      await refreshProfiles(currentUser);
+      return;
+    }
+
     const next = profiles.map((item) =>
       item.id === id
         ? { ...item, caseName: nextName, savedAt: niceNow(), state: { ...item.state, caseName: nextName } }
         : item,
     );
-    saveProfiles(next);
+    saveProfilesLocal(next);
     if (state.caseName === profile.caseName && state.meta.brokerName === profile.brokerName) {
       setState((prev) => ({ ...prev, caseName: nextName }));
       setProfileNameDraft(nextName);
     }
   };
 
-  const duplicateProfileById = (id: string) => {
+  const duplicateProfileById = async (id: string) => {
     const profile = profiles.find((item) => item.id === id);
     if (!profile) return;
     const nextName = window.prompt('Duplicate case as', `${profile.caseName} Copy`)?.trim();
     if (!nextName) return;
-    const duplicate: LocalProfile = {
+
+    if (profile.source === 'cloud' && supabaseEnabled && currentUser) {
+      const { error } = await supabase.from('broker_cases').insert({
+        owner_id: currentUser.id,
+        case_name: nextName,
+        app_state: { ...profile.state, caseName: nextName },
+      });
+      if (error) {
+        setAuthMessage(error.message || 'Duplicate failed.');
+        return;
+      }
+      await refreshProfiles(currentUser);
+      return;
+    }
+
+    const duplicate: SavedProfile = {
       ...profile,
       id: makeProfileId(),
       caseName: nextName,
       savedAt: niceNow(),
       state: { ...profile.state, caseName: nextName },
+      source: 'local',
     };
-    saveProfiles([duplicate, ...profiles]);
+    saveProfilesLocal([duplicate, ...profiles]);
   };
 
-  const changeBroker = () => {
-    setBrokerDraft('');
+  const signOutOrChangeAccount = async () => {
     setProfileSearch('');
+    if (supabaseEnabled && currentUser) {
+      await supabase.auth.signOut();
+    }
+    setCurrentUser(null);
+    setStorageMode('local');
     setState((prev) => ({ ...prev, meta: { ...prev.meta, brokerName: '' } }));
-    setStartupStep('broker');
+    setStartupStep('auth');
   };
 
   const saveJson = (name: string, payload: unknown) => {
@@ -1042,10 +1261,12 @@ function App() {
   const renderSettings = () => (
     <div className="grid two-col">
       <section className="panel">
-        <h2>Branding, Profiles & Defaults</h2>
+        <h2>Branding, Account & Defaults</h2>
         <div className="field-grid">
           {field('Brand name', state.meta.brandName, (v) => patchMeta('brandName', v as string))}
-          <label className="field"><span>Broker name</span><input type="text" value={state.meta.brokerName} readOnly /></label>
+          <label className="field"><span>Signed-in broker</span><input type="text" value={state.meta.brokerName} readOnly /></label>
+          <label className="field"><span>Storage mode</span><input type="text" value={storageMode === 'cloud' ? 'Cloud (Supabase)' : 'Local browser only'} readOnly /></label>
+          <label className="field"><span>Account email</span><input type="text" value={currentUser?.email || 'Guest / not signed in'} readOnly /></label>
           {field('Local profile case name', profileNameDraft, (v) => setProfileNameDraft(v as string))}
           {field('Property one name', state.meta.propertyOneName, (v) => patchMeta('propertyOneName', v as string))}
           {field('Property two name', state.meta.propertyTwoName, (v) => patchMeta('propertyTwoName', v as string))}
@@ -1057,19 +1278,19 @@ function App() {
           </button>
           {state.meta.brokerName !== 'Guest' && (
             <button className="secondary" onClick={saveToProfile}>
-              Save to Profile
+              Save to Cloud / Profile
             </button>
           )}
-          <button className="secondary" onClick={changeBroker}>
-            Change Broker / Guest
+          <button className="secondary" onClick={() => void signOutOrChangeAccount()}>
+            Sign out / Change account
           </button>
-          <button className="secondary" onClick={() => { setState(blankState()); setProfileNameDraft(''); setBrokerDraft(''); setStartupStep('broker'); }}>
+          <button className="secondary" onClick={() => { setState(blankState()); setProfileNameDraft(''); setStartupStep('auth'); }}>
             Reset everything
           </button>
         </div>
         {state.meta.brokerName !== 'Guest' && (
           <div className="profile-list">
-            <div className="profile-list-title">Saved local profiles for {state.meta.brokerName || 'Broker'}</div>
+            <div className="profile-list-title">Saved cases for {state.meta.brokerName || 'Broker'}</div>
             <label className="field profile-search-field">
               <span>Search saved cases</span>
               <input type="text" value={profileSearch} onChange={(e) => setProfileSearch(e.target.value)} placeholder="Search by case name..." />
@@ -1087,17 +1308,18 @@ function App() {
                   <button className="ghost danger" onClick={() => deleteProfileById(profile.id)}>Delete</button>
                 </div>
               </div>
-            )) : <div className="muted">No local profiles matched for this broker yet.</div>}
+            )) : <div className="muted">No saved cases matched yet.</div>}
           </div>
         )}
       </section>
       <section className="panel">
         <h2>Deployment notes</h2>
         <ul className="feature-list">
-          <li>After changing files, test locally with <code>npm run dev</code>.</li>
-          <li>Then push to GitHub and run <code>npm run deploy</code> for the gh-pages branch.</li>
-          <li>Guest mode skips broker profile storage, but manual tab and file save/load still work.</li>
+          <li>For cloud sign-in, add <code>VITE_SUPABASE_URL</code> and <code>VITE_SUPABASE_ANON_KEY</code> to your local <code>.env</code> and your host.</li>
+          <li>Run the included SQL script once in Supabase to create the <code>broker_cases</code> table and policies.</li>
+          <li>Guest mode still works locally if Supabase is not configured yet.</li>
         </ul>
+        {authMessage && <p className="muted">{authMessage}</p>}
         <p className="muted">{DISCLAIMER}</p>
       </section>
     </div>
@@ -1110,9 +1332,9 @@ function App() {
         <div>
           <div className="eyebrow">Mortgage workflow dashboard</div>
           <h1>{state.meta.brandName || 'XYZ Finance Specialists'}</h1>
-          <p>Live GitHub-hosted calculator with per-tab save/load, branded PDFs, and parity-focused summary blocks.</p>
+          <p>Live calculator with sign-in-ready cloud case storage, branded PDFs, and parity-focused summary blocks.</p>
         </div>
-        <div className="header-badge">Broker: {state.meta.brokerName || '—'}</div>
+        <div className="header-badge">{currentUser?.email ? `Signed in: ${currentUser.email}` : `Broker: ${state.meta.brokerName || '—'}`}</div>
       </header>
 
       <nav className="tabs">
@@ -1136,55 +1358,82 @@ function App() {
       {startupStep !== 'ready' && (
         <div className="startup-overlay">
           <div className="startup-card">
-            {startupStep === 'broker' && (
+            {startupStep === 'auth' && (
               <>
-                <div className="eyebrow">Welcome</div>
-                <h2>Please enter Broker Name before proceeding</h2>
+                <div className="eyebrow">Secure access</div>
+                <h2>Sign in to unlock cloud-saved cases</h2>
                 <p>
-                  Broker mode gives access to local saved profiles. Guest mode skips profile storage but still allows manual save/load in the tabs.
+                  Use your invited broker credentials to sign in. Guest mode is still available for demos, and the owner account button below is only for your one-time setup tonight.
                 </p>
                 <label className="field startup-field">
-                  <span>Broker Name</span>
+                  <span>Email</span>
                   <input
                     autoFocus
-                    type="text"
-                    value={brokerDraft}
-                    onChange={(e) => setBrokerDraft(e.target.value)}
+                    type="email"
+                    value={authEmail}
+                    onChange={(e) => setAuthEmail(e.target.value)}
                     onKeyDown={(e) => {
-                      if (e.key === 'Enter' && brokerDraft.trim()) enterBrokerMode();
+                      if (e.key === 'Enter' && authEmail.trim() && authPassword.trim()) void handleAuthSubmit();
+                    }}
+                  />
+                </label>
+                <label className="field startup-field">
+                  <span>Password</span>
+                  <input
+                    type="password"
+                    value={authPassword}
+                    onChange={(e) => setAuthPassword(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' && authEmail.trim() && authPassword.trim()) void handleAuthSubmit();
                     }}
                   />
                 </label>
                 <div className="startup-actions">
-                  <button onClick={enterBrokerMode} disabled={!brokerDraft.trim()}>
-                    Continue
+                  <button onClick={() => void handleAuthSubmit()} disabled={authBusy || !authEmail.trim() || !authPassword.trim()}>
+                    {authBusy ? 'Working...' : 'Sign In'}
                   </button>
                 </div>
                 <button className="startup-link" onClick={continueAsGuest}>
                   Continue as Guest
                 </button>
+                <button
+                  className="secondary"
+                  onClick={() => void handleCreateOwnerAccount()}
+                  disabled={authBusy || !authEmail.trim() || !authPassword.trim()}
+                >
+                  {authBusy ? 'Working...' : 'Create My Owner Account'}
+                </button>
+                {authMessage && <p className="muted">{authMessage}</p>}
+                {!supabaseEnabled && (
+                  <p className="muted">
+                    Supabase env vars are missing. Add them before deploying if you want real sign-in tonight.
+                  </p>
+                )}
               </>
             )}
 
             {startupStep === 'brokerMenu' && (
               <>
-                <div className="eyebrow">Welcome, {state.meta.brokerName}</div>
+                <div className="eyebrow">Welcome, {state.meta.brokerName || 'Broker'}</div>
                 <h2>Choose how you’d like to continue</h2>
                 <div className="startup-menu">
                   <button onClick={createNewCase}>Create New Case</button>
-                  <button className="secondary" onClick={() => setStartupStep('brokerLoad')}>
+                  <button className="secondary" onClick={() => {
+                    void refreshProfiles();
+                    setStartupStep('brokerLoad');
+                  }}>
                     Load Saved Case
                   </button>
                 </div>
-                <button className="startup-link" onClick={changeBroker}>
-                  Use a different broker name
+                <button className="startup-link" onClick={() => void signOutOrChangeAccount()}>
+                  {currentUser ? 'Sign out' : 'Use guest mode'}
                 </button>
               </>
             )}
 
             {startupStep === 'brokerLoad' && (
               <>
-                <div className="eyebrow">Saved local profiles</div>
+                <div className="eyebrow">{storageMode === 'cloud' ? 'Cloud-saved cases' : 'Local saved profiles'}</div>
                 <h2>Load Saved Case</h2>
                 <label className="field startup-field">
                   <span>Search saved cases</span>
@@ -1202,20 +1451,20 @@ function App() {
                         <button className="startup-profile-row" onClick={() => loadProfileById(profile.id)}>
                           <span>
                             <strong>{profile.caseName}</strong>
-                            <small>{new Date(profile.savedAt).toLocaleString()}</small>
+                            <small>{new Date(profile.savedAt).toLocaleString()} • {profile.source === 'cloud' ? 'Cloud' : 'Local'}</small>
                           </span>
                           <span>Load</span>
                         </button>
                         <div className="startup-profile-actions">
-                          <button className="secondary" onClick={() => renameProfileById(profile.id)}>Rename</button>
-                          <button className="secondary" onClick={() => duplicateProfileById(profile.id)}>Duplicate</button>
-                          <button className="ghost danger" onClick={() => deleteProfileById(profile.id)}>Delete</button>
+                          <button className="secondary" onClick={() => void renameProfileById(profile.id)}>Rename</button>
+                          <button className="secondary" onClick={() => void duplicateProfileById(profile.id)}>Duplicate</button>
+                          <button className="ghost danger" onClick={() => void deleteProfileById(profile.id)}>Delete</button>
                         </div>
                       </div>
                     ))}
                   </div>
                 ) : (
-                  <p className="muted">No local profiles matched for {state.meta.brokerName} yet.</p>
+                  <p className="muted">No saved cases matched yet.</p>
                 )}
                 <div className="startup-menu">
                   <button onClick={createNewCase}>Create New Case</button>
