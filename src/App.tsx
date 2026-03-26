@@ -7,6 +7,7 @@ import {
   DISCLAIMER,
   calcBorrowing,
   calcOneProperty,
+  calcTwoProperties,
   calcRefinance,
   type AlertTone,
   type ApplicantType,
@@ -16,6 +17,7 @@ import {
   type LoanPurpose,
   type OnePropertyInputs,
   type PurchaseType,
+  type TwoPropertyInputs,
   type RefinanceInputs,
 } from './calculations';
 
@@ -216,6 +218,24 @@ const INPUT_LABELS_ONE: Record<string, string> = {
   livingExpensesMonthly: 'Living expenses monthly',
 };
 
+const INPUT_LABELS_TWO: Record<string, string> = {
+  scenarioName: 'Scenario name',
+  interestRate: 'Interest rate (%)',
+  loanTerm: 'Loan term (years)',
+  currentMortgage: 'Current mortgage',
+  currentValue: 'Current property value',
+  secondPrice: 'Second house price',
+  crossCollat: 'Cross-collateralisation for LMI',
+  desiredLvr: 'Desired consolidated LVR (%)',
+  withdraw80: 'Withdraw equity to 80%',
+  currentRent: 'Current total monthly rent',
+  newRent: 'New property monthly rent',
+  approvalMax: 'Loan approval maximum',
+  lmiExempt: 'LMI exempt',
+  exemptCap: 'LMI exempt cap (%)',
+  yearlyIncome: 'Yearly income',
+};
+
 const INPUT_LABELS_REFI: Record<string, string> = {
   scenarioName: 'Scenario name',
   currentValue: 'Current property value',
@@ -287,6 +307,7 @@ function App() {
   }, []);
 
   const oneCalc = useMemo(() => calcOneProperty(state.one), [state.one]);
+  const twoCalc = useMemo(() => calcTwoProperties(state.two), [state.two]);
   const refiCalc = useMemo(() => calcRefinance(state.refi), [state.refi]);
   const borrowCalc = useMemo(() => calcBorrowing(state.borrow), [state.borrow]);
 
@@ -294,6 +315,8 @@ function App() {
     setState((prev) => ({ ...prev, [key]: value }));
   const patchOne = <K extends keyof OnePropertyInputs>(key: K, value: OnePropertyInputs[K]) =>
     patch('one', { ...state.one, [key]: value });
+  const patchTwo = <K extends keyof TwoPropertyInputs>(key: K, value: TwoPropertyInputs[K]) =>
+    patch('two', { ...state.two, [key]: value });
   const patchRefi = <K extends keyof RefinanceInputs>(key: K, value: RefinanceInputs[K]) =>
     patch('refi', { ...state.refi, [key]: value });
   const patchBorrow = <K extends keyof BorrowingInputs>(key: K, value: BorrowingInputs[K]) =>
@@ -455,8 +478,8 @@ function App() {
     input.click();
   };
 
-  const saveTab = (key: 'one' | 'refi' | 'borrow') => saveJson(`${key}-tab.json`, state[key]);
-  const loadTab = (key: 'one' | 'refi' | 'borrow') =>
+  const saveTab = (key: 'one' | 'two' | 'refi' | 'borrow') => saveJson(`${key}-tab.json`, state[key]);
+  const loadTab = (key: 'one' | 'two' | 'refi' | 'borrow') =>
     loadJson((data) => patch(key, { ...state[key], ...data } as any));
   const saveWhole = () => saveJson('loan-web-whole.json', state);
   const loadWhole = () => loadJson((data) => { const next = { ...blankState(), ...data }; setState(next); setProfileNameDraft(next.caseName || ''); });
@@ -664,6 +687,11 @@ function App() {
     return entries;
   };
 
+  const twoPdfInputRows = () =>
+    Object.entries(state.two)
+      .filter(([, value]) => String(value).trim() !== '')
+      .map(([key, value]) => ({ label: INPUT_LABELS_TWO[key] || key, value: String(value) }));
+
   const refiPdfInputRows = () =>
     Object.entries(state.refi)
       .filter(([, value]) => String(value).trim() !== '')
@@ -774,6 +802,74 @@ function App() {
           <MetricSection title="At a Glance" items={oneCalc.atAGlance} />
           <DetailSection title="Decision Guide" rows={oneCalc.decisionGuide} />
           <DetailSection title="All Calculated Results" rows={Object.entries(oneCalc.outputs).map(([label, value]) => ({ label, value }))} />
+        </section>
+      </div>
+    );
+  };
+
+  const renderTwo = () => {
+    const compareRows = Object.entries(twoCalc.outputs).map(([k, v]) => `${k}: ${v}`);
+    const warningRows = [
+      { label: 'Main warning', value: twoCalc.warnings[0] || 'Please review the points below.' },
+      ...twoCalc.warnings.slice(1, 7).map((value, index) => ({ label: `Note ${index + 1}`, value })),
+    ];
+    return (
+      <div className="grid two-col">
+        <section className="panel">
+          <h2>2 Properties</h2>
+          <div className="field-grid">
+            {field('Scenario name', state.two.scenarioName, (v) => patchTwo('scenarioName', v as string))}
+            {field('Interest rate (%)', state.two.interestRate, (v) => patchTwo('interestRate', v as string), 'number')}
+            {field('Loan term (years)', state.two.loanTerm, (v) => patchTwo('loanTerm', v as string), 'number')}
+            {field('Current mortgage', state.two.currentMortgage, (v) => patchTwo('currentMortgage', v as string), 'number')}
+            {field('Current property value', state.two.currentValue, (v) => patchTwo('currentValue', v as string), 'number')}
+            {field('Second house price', state.two.secondPrice, (v) => patchTwo('secondPrice', v as string), 'number')}
+            {field('Desired consolidated LVR (%)', state.two.desiredLvr, (v) => patchTwo('desiredLvr', v as string), 'number')}
+            {field('Current total monthly rent', state.two.currentRent, (v) => patchTwo('currentRent', v as string), 'number')}
+            {field('New property monthly rent', state.two.newRent, (v) => patchTwo('newRent', v as string), 'number')}
+            {field('Loan approval maximum', state.two.approvalMax, (v) => patchTwo('approvalMax', v as string), 'number')}
+            {field('LMI exempt cap (%)', state.two.exemptCap, (v) => patchTwo('exemptCap', v as string), 'number')}
+            {field('Yearly income', state.two.yearlyIncome, (v) => patchTwo('yearlyIncome', v as string), 'number')}
+          </div>
+          <div className="checkbox-grid">
+            <label className="check-field">
+              <input type="checkbox" checked={state.two.crossCollat} onChange={(e) => patchTwo('crossCollat', e.target.checked)} /> Cross-collateralisation for LMI
+            </label>
+            <label className="check-field">
+              <input type="checkbox" checked={state.two.withdraw80} onChange={(e) => patchTwo('withdraw80', e.target.checked)} /> Withdraw equity to 80%
+            </label>
+            <label className="check-field">
+              <input type="checkbox" checked={state.two.lmiExempt} onChange={(e) => patchTwo('lmiExempt', e.target.checked)} /> LMI exempt
+            </label>
+          </div>
+          <Actions
+            onSaveTab={() => saveTab('two')}
+            onLoadTab={() => loadTab('two')}
+            onPdf={() =>
+              exportPdfStyled({
+                title: '2 Properties',
+                subtitle: state.two.scenarioName?.trim() || twoCalc.deal.text || 'Review assumptions and inputs.',
+                atAGlance: twoCalc.atAGlance.map((x) => ({ label: x.label, value: x.value })),
+                decisionRows: twoCalc.decisionGuide,
+                warningRows,
+                inputRows: twoPdfInputRows(),
+                outputRows: Object.entries(twoCalc.outputs)
+                  .filter(([, value]) => String(value).trim() !== '' && String(value).trim() !== '-')
+                  .map(([label, value]) => ({ label, value })),
+              })
+            }
+            onResetTab={() => patch('two', { ...DEFAULTS.twoProperties })}
+            compareLabel={twoCalc.deal.text}
+            onCompare={(slot) => saveCompare(slot, '2 Properties', compareRows)}
+          />
+        </section>
+        <section className="panel">
+          <h2>Results</h2>
+          <Banner tone={twoCalc.deal.tone} lines={[twoCalc.deal.text]} />
+          <Banner tone={twoCalc.warningTone} lines={twoCalc.warnings} />
+          <MetricSection title="At a Glance" items={twoCalc.atAGlance} />
+          <DetailSection title="Decision Guide" rows={twoCalc.decisionGuide} />
+          <DetailSection title="All Calculated Results" rows={Object.entries(twoCalc.outputs).map(([label, value]) => ({ label, value }))} />
         </section>
       </div>
     );
@@ -1030,12 +1126,7 @@ function App() {
       <main className="content">
         {tab === 'home' && renderHome()}
         {tab === 'one' && renderOne()}
-        {tab === 'two' && (
-          <section className="panel">
-            <h2>2 Properties</h2>
-            <p>This tab is still simpler than the desktop version. I left it mostly untouched while the parity work focused on 1 Property, Refinance, and Borrowing Capacity first.</p>
-          </section>
-        )}
+        {tab === 'two' && renderTwo()}
         {tab === 'refi' && renderRefi()}
         {tab === 'borrow' && renderBorrow()}
         {tab === 'compare' && renderCompare()}

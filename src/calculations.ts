@@ -360,6 +360,7 @@ export const buildOnePropertyRecommendations = ({
 };
 
 export type OnePropertyInputs = typeof DEFAULTS.oneProperty;
+export type TwoPropertyInputs = typeof DEFAULTS.twoProperties;
 export type RefinanceInputs = typeof DEFAULTS.refinance;
 export type BorrowingInputs = typeof DEFAULTS.borrowing;
 
@@ -647,6 +648,190 @@ export const calcOneProperty = (inputs: OnePropertyInputs) => {
       { label: 'Best next move', value: bestNextMove },
       { label: 'LVR position', value: `${formatPercent(baseLvr)} base / ${formatPercent(effectiveLvr)} effective` },
       { label: 'Monthly cash buffer', value: bufferAfterHousing !== undefined ? formatSignedMoney(bufferAfterHousing) : '-' },
+    ],
+  };
+};
+
+
+
+export const calcTwoProperties = (inputs: TwoPropertyInputs) => {
+  const rate = parseNumber(inputs.interestRate, 5.9);
+  const years = parseNumber(inputs.loanTerm, 30);
+  const currentMortgage = parseNumber(inputs.currentMortgage);
+  const currentValue = parseNumber(inputs.currentValue);
+  const secondPrice = parseNumber(inputs.secondPrice);
+  const crossCollat = !!inputs.crossCollat;
+  const desiredLvr = parseNumber(inputs.desiredLvr) / 100;
+  const withdraw80 = !!inputs.withdraw80;
+  const currentRent = parseNumber(inputs.currentRent);
+  const newRent = parseNumber(inputs.newRent);
+  const approvalMax = parseNumber(inputs.approvalMax);
+  const lmiExempt = !!inputs.lmiExempt;
+  const exemptCap = parseNumber(inputs.exemptCap, 90) / 100;
+  const yearlyIncome = parseNumber(inputs.yearlyIncome);
+  const transferFees = 2000;
+
+  const invalidWarnings: string[] = [];
+  if (desiredLvr >= 1) invalidWarnings.push('Desired consolidated LVR must be below 100%.');
+  if (currentValue <= 0) invalidWarnings.push('Current property value needs to be greater than zero.');
+  if (secondPrice <= 0) invalidWarnings.push('Second property price needs to be greater than zero.');
+  if (years <= 0) invalidWarnings.push('Loan term needs to be greater than zero years.');
+
+  if (invalidWarnings.length) {
+    return {
+      tone: 'bad' as AlertTone,
+      deal: { text: 'Scenario needs valid inputs', tone: 'bad' as AlertTone },
+      warnings: invalidWarnings,
+      warningTone: 'bad' as AlertTone,
+      outputs: {
+        'Scenario status': 'Enter valid values to calculate the 2-property scenario.',
+      },
+      atAGlance: [
+        { label: 'Scenario', value: 'Invalid inputs', tone: 'bad' as AlertTone },
+        { label: 'Desired LVR', value: desiredLvr > 0 ? formatPercent(desiredLvr) : '-', tone: 'bad' as AlertTone },
+      ],
+      decisionGuide: [
+        { label: 'Best next move', value: invalidWarnings[0] },
+      ],
+    };
+  }
+
+  const equity = currentValue - currentMortgage;
+  const currentLvr = currentValue > 0 ? currentMortgage / currentValue : 0;
+  const mortgageAfterDraw = withdraw80 ? 0.8 * currentValue : currentMortgage;
+  const equityWithdrawn = withdraw80 ? mortgageAfterDraw - currentMortgage : 0;
+
+  const stamp = stampDuty(secondPrice, 'Investment');
+  const totalAssets = currentValue + secondPrice;
+  const totalConsolidatedLoan = desiredLvr * totalAssets;
+  const newLoanRequired = Math.max(0, totalConsolidatedLoan - mortgageAfterDraw);
+  const actualNewLoan = approvalMax > 0 ? Math.min(newLoanRequired, approvalMax) : newLoanRequired;
+  const newAssetLvr = secondPrice > 0 ? actualNewLoan / secondPrice : 0;
+
+  const lmiBaseLoan = crossCollat ? totalConsolidatedLoan : actualNewLoan;
+  const lmiBaseValue = crossCollat ? totalAssets : secondPrice;
+  const lmi = lmiCost(lmiBaseValue, lmiBaseLoan, lmiExempt, exemptCap || 0.9);
+  const loanPlusLmi = totalConsolidatedLoan + lmi;
+  const oop = Math.max(0, (secondPrice + stamp + transferFees) - (actualNewLoan + Math.max(0, equityWithdrawn)));
+  const extraCash = approvalMax > 0 ? Math.max(0, newLoanRequired - approvalMax) : 0;
+
+  const monthlyPiCurrent = periodicPayment(mortgageAfterDraw, rate, years, 'Monthly');
+  const monthlyPiNew = periodicPayment(actualNewLoan + lmi, rate, years, 'Monthly');
+  const totalMonthlyPi = monthlyPiCurrent + monthlyPiNew;
+  const monthlyOffset = totalMonthlyPi - (currentRent + newRent);
+
+  const yearlyRates = 272 + 210 + 190 + 416 + ((currentValue - 100000) * 0.000173) + ((secondPrice - 100000) * 0.000173) + (((currentValue - 100000) * 0.05) * 0.05) + ((((secondPrice - 100000) * 0.05) * 0.05));
+  const yearlyPm = ((currentRent + newRent) * 0.055) * 12;
+  const yearlyLandTax = annualLandTax(currentValue + secondPrice);
+  const yearlyInsurance = 750 * 2;
+  const waterService = (21.26 + 122.58 + 31.51 + 22.63) * 2 * 4;
+  const yearlyOutgoings = yearlyRates + yearlyPm + yearlyLandTax + yearlyInsurance + waterService;
+  const monthlyOutgoings = yearlyOutgoings / 12;
+  const monthlyWithOutgoings = monthlyOffset + monthlyOutgoings;
+
+  const totalYearlyExpenses = ((currentRent * 12) + (newRent * 12)) - ((totalMonthlyPi * 12) + yearlyOutgoings);
+  const negativeGearing = ((currentRent * 12) + (newRent * 12)) - (((interestComponent(mortgageAfterDraw, rate, 'Monthly') + interestComponent(actualNewLoan + lmi, rate, 'Monthly')) * 12) + yearlyOutgoings);
+
+  const taxPayableBase = annualTax(yearlyIncome) + (0.02 * yearlyIncome);
+  const incomeWithNeg = yearlyIncome + negativeGearing;
+  const taxPayableNeg = annualTax(incomeWithNeg) + (0.02 * incomeWithNeg);
+  const taxBack = taxPayableBase - taxPayableNeg;
+
+  const totalLvr = totalAssets > 0 ? loanPlusLmi / totalAssets : 0;
+  const serviceRatio = yearlyIncome > 0 ? totalMonthlyPi / Math.max(1, yearlyIncome / 12) : 0;
+
+  const warnings: string[] = [];
+  let warningTone: AlertTone = 'good';
+  if (desiredLvr > 0.95) {
+    warnings.push('Desired consolidated LVR is above 95%. This is a high-leverage scenario.');
+    warningTone = 'bad';
+  } else if (desiredLvr > 0.90) {
+    warnings.push('Desired consolidated LVR is above 90%. Review buffers, valuation risk, and LMI impacts carefully.');
+    warningTone = 'warn';
+  }
+  if (extraCash > 0) {
+    warnings.push('Approval limit is below the loan required for the requested scenario, so extra cash is needed.');
+    if (warningTone === 'good') warningTone = 'warn';
+  }
+  if (serviceRatio > 0.35) {
+    warnings.push('Estimated total monthly repayments are above 35% of the entered annual income.');
+    if (warningTone === 'good') warningTone = 'warn';
+  }
+  if (monthlyWithOutgoings > 0) {
+    warnings.push('After rent and estimated outgoings, this scenario is still cash-flow negative each month.');
+    if (warningTone === 'good') warningTone = 'warn';
+  }
+  if (withdraw80) warnings.push('Withdraw to 80% mode is on, so the current property has been re-geared up to 80% LVR for this scenario.');
+  if (!warnings.length) warnings.push('Scenario looks internally consistent using the current assumptions.');
+
+  const dealTone: AlertTone = totalLvr <= 0.8 && monthlyWithOutgoings <= 0 ? 'good' : totalLvr <= 0.9 ? 'warn' : 'bad';
+  const dealText = totalLvr <= 0.80 && monthlyWithOutgoings <= 0
+    ? 'Strong Position'
+    : totalLvr <= 0.90
+      ? 'Moderate Stretch'
+      : 'High Risk Structure';
+
+  const whyResult = extraCash > 0
+    ? 'Approval limit is capping the structure.'
+    : monthlyWithOutgoings > 0
+      ? 'Cash flow stays negative after rent and estimated outgoings.'
+      : totalLvr > 0.9
+        ? 'Consolidated leverage remains elevated.'
+        : withdraw80
+          ? 'The deal works partly because equity is being redrawn up to 80% on the current property.'
+          : 'LVR and cash flow are comparatively more balanced on the current assumptions.';
+
+  const bestNextMove = extraCash > 0
+    ? 'Increase available lending, lower the second purchase price, or contribute more equity/cash.'
+    : monthlyWithOutgoings > 0
+      ? 'Stress test the rent, rate, and outgoings before proceeding with this structure.'
+      : totalLvr > 0.9
+        ? 'Consider lowering the target LVR or second purchase price to improve lender fit and reduce LMI pressure.'
+        : 'Compare this against a slightly lower second purchase price so you can see how much extra buffer it creates.';
+
+  return {
+    tone: dealTone,
+    deal: { text: dealText, tone: dealTone },
+    warnings,
+    warningTone,
+    outputs: {
+      'Current Equity': formatMoney(equity),
+      'Current LVR': formatPercent(currentLvr),
+      'Mortgage After Equity Draw': formatMoney(mortgageAfterDraw),
+      'Equity Withdrawn': formatMoney(equityWithdrawn),
+      'New Loan Required': formatMoney(newLoanRequired),
+      'Actual New Loan': formatMoney(actualNewLoan),
+      'Loan-to-Value Ratio (new asset)': formatPercent(newAssetLvr),
+      'Total Assets': formatMoney(totalAssets),
+      'Total Consolidated Loan Amount': formatMoney(totalConsolidatedLoan),
+      'LMI Costs': formatMoney(lmi),
+      'Total Loan Amount + LMI': formatMoney(loanPlusLmi),
+      'Extra Cash Required': formatMoney(extraCash),
+      'Total Out-of-Pocket Expenses': formatMoney(oop),
+      'Total Monthly P&I Repayments': formatMoney(totalMonthlyPi),
+      'Total Monthly Repayments with Offset': formatMoney(monthlyOffset),
+      'Total Monthly Repayments with Outgoings': formatMoney(monthlyWithOutgoings),
+      'Total Yearly Expenses': formatMoney(totalYearlyExpenses),
+      'Positive/Negative Gearing': formatMoney(negativeGearing),
+      'Tax Back from Negative Gearing': formatMoney(taxBack),
+      'Fortnightly Take Home Adjustment': formatMoney(taxBack / 26),
+      'Monthly Take Home Adjustment': formatMoney(taxBack / 12),
+      'Cross-collateralised for LMI': crossCollat ? 'Yes' : 'No',
+      'Withdraw equity to 80%': withdraw80 ? 'Yes' : 'No',
+    },
+    atAGlance: [
+      { label: 'Out of pocket', value: formatMoney(oop), tone: oop > 0 ? 'info' as AlertTone : 'good' as AlertTone },
+      { label: 'Consolidated LVR', value: formatPercent(totalLvr), tone: toneFromLvr(totalLvr) },
+      { label: 'Total loan + LMI', value: formatMoney(loanPlusLmi), tone: 'info' as AlertTone },
+      { label: 'Monthly P&I', value: formatMoney(totalMonthlyPi), tone: serviceRatio > 0.35 ? 'warn' as AlertTone : 'good' as AlertTone },
+      { label: 'Monthly after rent', value: formatSignedMoney(-monthlyOffset), tone: monthlyOffset > 0 ? 'warn' as AlertTone : 'good' as AlertTone },
+      { label: 'Structure', value: dealText, tone: dealTone },
+    ],
+    decisionGuide: [
+      { label: 'Why this result', value: whyResult },
+      { label: 'Best next move', value: bestNextMove },
+      { label: 'Equity release', value: formatMoney(Math.max(0, equityWithdrawn)) },
+      { label: 'Tax adjustment', value: formatMoney(taxBack / 12) + ' per month' },
     ],
   };
 };
