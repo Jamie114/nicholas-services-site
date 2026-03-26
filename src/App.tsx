@@ -1,5 +1,6 @@
 
 import { useEffect, useMemo, useState } from 'react';
+import { supabase, supabaseEnabled, type AuthUser } from './supabaseClient';
 import { jsPDF } from 'jspdf';
 import './styles.css';
 import {
@@ -260,7 +261,7 @@ const INPUT_LABELS_BORROW: Record<string, string> = {
   creditCardLoadingPct: 'Credit card loading (%/month)',
 };
 
-function App() {
+function MainApp() {
   const [state, setState] = useState<SavedState>(() => {
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
@@ -1137,6 +1138,117 @@ function App() {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+
+
+type AccessMode = 'locked' | 'auth' | 'guest';
+
+function App() {
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [user, setUser] = useState<AuthUser | null>(null);
+  const [accessMode, setAccessMode] = useState<AccessMode>('locked');
+  const [msg, setMsg] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    if (!supabaseEnabled) return;
+    supabase.auth.getSession().then(({ data }) => {
+      const sessionUser = data.session?.user ?? null;
+      setUser(sessionUser);
+      if (sessionUser) setAccessMode('auth');
+    });
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((_event, session) => {
+      const nextUser = session?.user ?? null;
+      setUser(nextUser);
+      setAccessMode(nextUser ? 'auth' : 'guest');
+    });
+    return () => subscription.unsubscribe();
+  }, []);
+
+  const signIn = async () => {
+    if (!supabaseEnabled || busy || !email.trim() || !password) return;
+    setBusy(true);
+    setMsg('');
+    const { error } = await supabase.auth.signInWithPassword({
+      email: email.trim(),
+      password,
+    });
+    if (error) {
+      setMsg(error.message);
+    } else {
+      setAccessMode('auth');
+    }
+    setBusy(false);
+  };
+
+  if (accessMode === 'auth' && user) {
+    return <MainApp />;
+  }
+
+  if (accessMode === 'guest') {
+    return <MainApp />;
+  }
+
+  return (
+    <div className="auth-screen">
+      <div className="auth-card">
+        <div className="auth-kicker">Secure Access</div>
+        <h1>Sign in to unlock cloud-saved cases</h1>
+        <p className="auth-copy">
+          Use your invited broker credentials to sign in. Guest mode is still available for demos.
+        </p>
+
+        <label className="auth-field">
+          <span>Email</span>
+          <input
+            autoFocus
+            type="email"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && email.trim() && password) {
+                void signIn();
+              }
+            }}
+          />
+        </label>
+
+        <label className="auth-field">
+          <span>Password</span>
+          <input
+            type="password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && email.trim() && password) {
+                void signIn();
+              }
+            }}
+          />
+        </label>
+
+        <div className="auth-actions">
+          <button className="auth-signin" onClick={() => void signIn()} disabled={busy || !email.trim() || !password}>
+            {busy ? 'Signing In...' : 'Sign In'}
+          </button>
+          <button className="auth-guest" onClick={() => setAccessMode('guest')}>
+            Continue as Guest
+          </button>
+        </div>
+
+        {!supabaseEnabled && (
+          <div className="auth-message warn">
+            Supabase is not enabled yet. Add VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY to use sign in.
+          </div>
+        )}
+        {msg && <div className="auth-message error">{msg}</div>}
+      </div>
     </div>
   );
 }
