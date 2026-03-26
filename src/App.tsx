@@ -38,6 +38,7 @@ type SavedState = {
 const STORAGE_KEY = 'loan-web-v34';
 const PROFILE_STORAGE_KEY = 'loan-web-profiles-v36';
 
+type AuthMode = 'signin';
 type StartupStep = 'auth' | 'brokerMenu' | 'brokerLoad' | 'ready';
 
 type SavedProfile = {
@@ -313,6 +314,7 @@ function App() {
   const [profiles, setProfiles] = useState<SavedProfile[]>(() => getStoredProfiles());
   const [profileNameDraft, setProfileNameDraft] = useState(state.caseName || '');
   const [profileSearch, setProfileSearch] = useState('');
+  const [authMode, setAuthMode] = useState<AuthMode>('signin');
   const [authEmail, setAuthEmail] = useState('');
   const [authPassword, setAuthPassword] = useState('');
   const [authBusy, setAuthBusy] = useState(false);
@@ -449,44 +451,26 @@ function App() {
     setAuthBusy(true);
     setAuthMessage('');
     try {
-      const { error } = await supabase.auth.signInWithPassword({ email, password });
-      if (error) throw error;
-      setAuthMessage('Signed in.');
+      if (authMode === 'signup') {
+        const { error } = await supabase.auth.signUp({
+          email,
+          password,
+          options: {
+            data: {
+              name: email.split('@')[0],
+            },
+          },
+        });
+        if (error) throw error;
+        setAuthMessage('Account created. Check your email if confirmation is enabled, then sign in.');
+        setAuthMode('signin');
+      } else {
+        const { error } = await supabase.auth.signInWithPassword({ email, password });
+        if (error) throw error;
+        setAuthMessage('Signed in.');
+      }
     } catch (error: any) {
       setAuthMessage(error?.message || 'Authentication failed.');
-    } finally {
-      setAuthBusy(false);
-    }
-  };
-
-  const handleCreateOwnerAccount = async () => {
-    if (!supabaseEnabled) {
-      setAuthMessage('Supabase is not configured yet. Use guest mode for tonight or add the VITE_SUPABASE_* values and redeploy.');
-      return;
-    }
-    const email = authEmail.trim();
-    const password = authPassword.trim();
-    if (!email || !password) {
-      setAuthMessage('Please enter both email and password.');
-      return;
-    }
-
-    setAuthBusy(true);
-    setAuthMessage('');
-    try {
-      const { error } = await supabase.auth.signUp({
-        email,
-        password,
-        options: {
-          data: {
-            name: email.split('@')[0],
-          },
-        },
-      });
-      if (error) throw error;
-      setAuthMessage('Owner account created. Turn signups off again in Supabase, then sign in.');
-    } catch (error: any) {
-      setAuthMessage(error?.message || 'Owner account creation failed.');
     } finally {
       setAuthBusy(false);
     }
@@ -1363,7 +1347,7 @@ function App() {
                 <div className="eyebrow">Secure access</div>
                 <h2>Sign in to unlock cloud-saved cases</h2>
                 <p>
-                  Use your invited broker credentials to sign in. Guest mode is still available for demos, and the owner account button below is only for your one-time setup tonight.
+                  Use your invited broker credentials to sign in. Guest mode is still available for demos, but public sign-up is disabled.
                 </p>
                 <label className="field startup-field">
                   <span>Email</span>
@@ -1395,13 +1379,6 @@ function App() {
                 </div>
                 <button className="startup-link" onClick={continueAsGuest}>
                   Continue as Guest
-                </button>
-                <button
-                  className="secondary"
-                  onClick={() => void handleCreateOwnerAccount()}
-                  disabled={authBusy || !authEmail.trim() || !authPassword.trim()}
-                >
-                  {authBusy ? 'Working...' : 'Create My Owner Account'}
                 </button>
                 {authMessage && <p className="muted">{authMessage}</p>}
                 {!supabaseEnabled && (
