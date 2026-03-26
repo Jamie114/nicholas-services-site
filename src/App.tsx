@@ -38,7 +38,6 @@ type SavedState = {
 const STORAGE_KEY = 'loan-web-v34';
 const PROFILE_STORAGE_KEY = 'loan-web-profiles-v36';
 
-type AuthMode = 'signin';
 type StartupStep = 'auth' | 'brokerMenu' | 'brokerLoad' | 'ready';
 
 type SavedProfile = {
@@ -314,7 +313,6 @@ function App() {
   const [profiles, setProfiles] = useState<SavedProfile[]>(() => getStoredProfiles());
   const [profileNameDraft, setProfileNameDraft] = useState(state.caseName || '');
   const [profileSearch, setProfileSearch] = useState('');
-  const [authMode, setAuthMode] = useState<AuthMode>('signin');
   const [authEmail, setAuthEmail] = useState('');
   const [authPassword, setAuthPassword] = useState('');
   const [authBusy, setAuthBusy] = useState(false);
@@ -451,24 +449,9 @@ function App() {
     setAuthBusy(true);
     setAuthMessage('');
     try {
-      if (authMode === 'signup') {
-        const { error } = await supabase.auth.signUp({
-          email,
-          password,
-          options: {
-            data: {
-              name: email.split('@')[0],
-            },
-          },
-        });
-        if (error) throw error;
-        setAuthMessage('Account created. Check your email if confirmation is enabled, then sign in.');
-        setAuthMode('signin');
-      } else {
-        const { error } = await supabase.auth.signInWithPassword({ email, password });
-        if (error) throw error;
-        setAuthMessage('Signed in.');
-      }
+      const { error } = await supabase.auth.signInWithPassword({ email, password });
+      if (error) throw error;
+      setAuthMessage('Signed in.');
     } catch (error: any) {
       setAuthMessage(error?.message || 'Authentication failed.');
     } finally {
