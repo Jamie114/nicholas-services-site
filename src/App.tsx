@@ -39,6 +39,16 @@ const STORAGE_KEY = 'loan-web-v34';
 const PROFILE_STORAGE_KEY = 'loan-web-profiles-v36';
 
 type StartupStep = 'auth' | 'brokerMenu' | 'brokerLoad' | 'ready';
+type UserRole = 'owner' | 'worker';
+type AccessLevel = 'view' | 'edit' | 'owner';
+
+type AppProfile = {
+  id: string;
+  email: string;
+  full_name: string | null;
+  role: UserRole;
+  status: string;
+};
 
 type SavedProfile = {
   id: string;
@@ -46,7 +56,10 @@ type SavedProfile = {
   caseName: string;
   savedAt: string;
   state: SavedState;
-  source: 'local' | 'cloud';
+  source: 'local' | 'cloud' | 'shared';
+  ownerId?: string;
+  ownerEmail?: string;
+  accessLevel?: AccessLevel;
 };
 
 const TAB_KEYS: Array<{ key: TabKey; label: string }> = [
@@ -319,6 +332,11 @@ function App() {
   const [authMessage, setAuthMessage] = useState('');
   const [currentUser, setCurrentUser] = useState<AuthUser | null>(null);
   const [storageMode, setStorageMode] = useState<'cloud' | 'local'>(supabaseEnabled ? 'cloud' : 'local');
+  const [currentProfile, setCurrentProfile] = useState<AppProfile | null>(null);
+  const [activeCaseId, setActiveCaseId] = useState<string | null>(null);
+  const [activeCaseOwnerId, setActiveCaseOwnerId] = useState<string | null>(null);
+  const [activeAccessLevel, setActiveAccessLevel] = useState<AccessLevel | null>(null);
+
 
   useEffect(() => {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
@@ -328,31 +346,168 @@ function App() {
     setProfiles(getStoredProfiles());
   }, []);
 
-  const refreshProfiles = async (userOverride?: AuthUser | null) => {
-    const user = userOverride === undefined ? currentUser : userOverride;
-    if (supabaseEnabled && user) {
-      const { data, error } = await supabase
-        .from('broker_cases')
-        .select('id, case_name, app_state, updated_at')
-        .eq('owner_id', user.id)
-        .order('updated_at', { ascending: false });
+  const ensureProfile = async (user: AuthUser): Promise<AppProfile | null> => {
+    if (!supabaseEnabled) return null;
 
-      if (!error && Array.isArray(data)) {
-        const next: SavedProfile[] = data.map((row: any) => ({
-          id: row.id,
-          brokerName: brokerNameFromUser(user),
-          caseName: row.case_name || 'Untitled Case',
-          savedAt: row.updated_at || niceNow(),
-          state: { ...blankState(), ...(row.app_state || {}), caseName: row.case_name || 'Untitled Case' },
-          source: 'cloud',
-        }));
-        setProfiles(next);
+    const fallbackName = brokerNameFromUser(user);
+    const selectCols = 'id, email, full_name, role, status';
+
+    const { data: existing, error: existingError } = await supabase
+      .from('profiles')
+      .select(selectCols)
+      .eq('id', user.id)
+      .maybeSingle();
+
+    if (existingError && existingError.code !== 'PGRST116') {
+      setAuthMessage(existingError.message || 'Could not load your profile.');
+    }
+
+    if (existing) {
+      return existing as AppProfile;
+    }
+
+    const { data: inserted, error: insertError } = await supabase
+      .from('profiles')
+      .upsert(
+        {
+          id: user.id,
+          email: user.email || '',
+          full_name: fallbackName,
+          role: 'worker',
+          status: 'active',
+        },
+        { onConflict: 'id' },
+      )
+      .select(selectCols)
+      .single();
+
+    if (insertError) {
+      setAuthMessage(insertError.message || 'Could not create your profile.');
+      return null;
+    }
+
+    return inserted as AppProfile;
+  };
+
+  const refreshProfiles = async (userOverride?: AuthUser | null, profileOverride?: AppProfile | null) => {
+    const user = userOverride === undefined ? currentUser : userOverride;
+    const profile = profileOverride === undefined ? currentProfile : profileOverride;
+
+    if (supabaseEnabled && user) {
+      const effectiveProfile = profile ?? (await ensureProfile(user));
+      if (!effectiveProfile) {
+        setProfiles(getStoredProfiles());
         return;
       }
-      setAuthMessage(error?.message || 'Cloud case sync failed. Falling back to local storage.');
+
+      const ownerNameFallback = effectiveProfile.full_name?.trim() || brokerNameFromUser(user);
+      const next: SavedProfile[] = [];
+      const ownerIds = new Set<string>();
+
+      if (effectiveProfile.role === 'owner') {
+        const { data, error } = await supabase
+          .from('broker_cases')
+          .select('id, owner_id, case_name, app_state, updated_at')
+          .order('updated_at', { ascending: false });
+
+        if (error) {
+          setAuthMessage(error.message || 'Cloud case sync failed.');
+        } else if (Array.isArray(data)) {
+          data.forEach((row: any) => {
+            ownerIds.add(String(row.owner_id || ''));
+            next.push({
+              id: row.id,
+              brokerName: row.app_state?.meta?.brokerName || ownerNameFallback,
+              caseName: row.case_name || 'Untitled Case',
+              savedAt: row.updated_at || niceNow(),
+              state: { ...blankState(), ...(row.app_state || {}), caseName: row.case_name || 'Untitled Case' },
+              source: 'cloud',
+              ownerId: row.owner_id,
+              accessLevel: 'owner',
+            });
+          });
+        }
+      } else {
+        const { data: ownData, error: ownError } = await supabase
+          .from('broker_cases')
+          .select('id, owner_id, case_name, app_state, updated_at')
+          .eq('owner_id', user.id)
+          .order('updated_at', { ascending: false });
+
+        if (ownError) {
+          setAuthMessage(ownError.message || 'Cloud case sync failed.');
+        } else if (Array.isArray(ownData)) {
+          ownData.forEach((row: any) => {
+            ownerIds.add(String(row.owner_id || ''));
+            next.push({
+              id: row.id,
+              brokerName: row.app_state?.meta?.brokerName || ownerNameFallback,
+              caseName: row.case_name || 'Untitled Case',
+              savedAt: row.updated_at || niceNow(),
+              state: { ...blankState(), ...(row.app_state || {}), caseName: row.case_name || 'Untitled Case' },
+              source: 'cloud',
+              ownerId: row.owner_id,
+              accessLevel: 'owner',
+            });
+          });
+        }
+
+        const { data: sharedData, error: sharedError } = await supabase
+          .from('case_access')
+          .select('access_level, broker_cases!inner(id, owner_id, case_name, app_state, updated_at)')
+          .eq('user_id', user.id)
+          .order('created_at', { ascending: false });
+
+        if (sharedError) {
+          setAuthMessage(sharedError.message || 'Shared case sync failed.');
+        } else if (Array.isArray(sharedData)) {
+          sharedData.forEach((row: any) => {
+            const caseRow = Array.isArray(row.broker_cases) ? row.broker_cases[0] : row.broker_cases;
+            if (!caseRow) return;
+            ownerIds.add(String(caseRow.owner_id || ''));
+            next.push({
+              id: caseRow.id,
+              brokerName: caseRow.app_state?.meta?.brokerName || 'Shared Case',
+              caseName: caseRow.case_name || 'Untitled Case',
+              savedAt: caseRow.updated_at || niceNow(),
+              state: { ...blankState(), ...(caseRow.app_state || {}), caseName: caseRow.case_name || 'Untitled Case' },
+              source: 'shared',
+              ownerId: caseRow.owner_id,
+              accessLevel: row.access_level === 'edit' ? 'edit' : 'view',
+            });
+          });
+        }
+      }
+
+      if (ownerIds.size) {
+        const ids = Array.from(ownerIds).filter(Boolean);
+        const { data: ownerProfiles } = await supabase
+          .from('profiles')
+          .select('id, email, full_name')
+          .in('id', ids);
+
+        const ownerMap = new Map<string, string>();
+        (ownerProfiles || []).forEach((row: any) => {
+          ownerMap.set(row.id, row.full_name || row.email || row.id);
+        });
+
+        next.forEach((profileRow) => {
+          if (profileRow.ownerId) {
+            profileRow.ownerEmail = ownerMap.get(profileRow.ownerId) || profileRow.ownerId;
+            if (effectiveProfile.role === 'owner' && profileRow.ownerId !== user.id) {
+              profileRow.brokerName = profileRow.ownerEmail || profileRow.brokerName;
+            }
+          }
+        });
+      }
+
+      setProfiles(next);
+      return;
     }
+
     setProfiles(getStoredProfiles());
   };
+
 
   useEffect(() => {
     let active = true;
@@ -365,17 +520,21 @@ function App() {
       };
     }
 
-    supabase.auth.getSession().then(({ data, error }) => {
+    supabase.auth.getSession().then(async ({ data, error }) => {
       if (!active) return;
       const user = data.session?.user ?? null;
       setCurrentUser(user);
       setStorageMode(user ? 'cloud' : 'local');
       if (user) {
-        const brokerName = brokerNameFromUser(user);
+        const profile = await ensureProfile(user);
+        if (!active) return;
+        setCurrentProfile(profile);
+        const brokerName = profile?.full_name?.trim() || brokerNameFromUser(user);
         setState((prev) => ({ ...prev, meta: { ...prev.meta, brokerName } }));
         setStartupStep('brokerMenu');
-        void refreshProfiles(user);
+        void refreshProfiles(user, profile);
       } else {
+        setCurrentProfile(null);
         setStartupStep('auth');
       }
       if (error) setAuthMessage(error.message);
@@ -389,11 +548,17 @@ function App() {
       setCurrentUser(user);
       setStorageMode(user ? 'cloud' : 'local');
       if (user) {
-        const brokerName = brokerNameFromUser(user);
-        setState((prev) => ({ ...prev, meta: { ...prev.meta, brokerName } }));
-        setStartupStep('brokerMenu');
-        void refreshProfiles(user);
+        void (async () => {
+          const profile = await ensureProfile(user);
+          if (!active) return;
+          setCurrentProfile(profile);
+          const brokerName = profile?.full_name?.trim() || brokerNameFromUser(user);
+          setState((prev) => ({ ...prev, meta: { ...prev.meta, brokerName } }));
+          setStartupStep('brokerMenu');
+          await refreshProfiles(user, profile);
+        })();
       } else {
+        setCurrentProfile(null);
         setStartupStep('auth');
       }
     });
@@ -459,8 +624,13 @@ function App() {
     }
   };
 
+
   const continueAsGuest = () => {
     setCurrentUser(null);
+    setCurrentProfile(null);
+    setActiveCaseId(null);
+    setActiveCaseOwnerId(null);
+    setActiveAccessLevel(null);
     setStorageMode('local');
     setState((prev) => ({ ...prev, meta: { ...prev.meta, brokerName: 'Guest' } }));
     setProfileSearch('');
@@ -468,7 +638,7 @@ function App() {
   };
 
   const createNewCase = () => {
-    const brokerName = currentUser ? brokerNameFromUser(currentUser) : state.meta.brokerName || 'Guest';
+    const brokerName = currentProfile?.full_name?.trim() || (currentUser ? brokerNameFromUser(currentUser) : state.meta.brokerName || 'Guest');
     const fresh = blankState();
     fresh.meta.brandName = state.meta.brandName;
     fresh.meta.propertyOneName = state.meta.propertyOneName;
@@ -485,18 +655,42 @@ function App() {
     const profile = profiles.find((item) => item.id === id);
     if (!profile) return;
     const next = { ...blankState(), ...profile.state, caseName: profile.caseName };
-    next.meta = { ...blankState().meta, ...profile.state.meta, brokerName: profile.brokerName };
+    next.meta = {
+      ...blankState().meta,
+      ...profile.state.meta,
+      brokerName:
+        profile.source === 'shared'
+          ? currentProfile?.full_name?.trim() || state.meta.brokerName
+          : profile.brokerName,
+    };
     setState(next);
     setProfileNameDraft(profile.caseName || '');
     setProfileSearch('');
+    setActiveCaseId(profile.id);
+    setActiveCaseOwnerId(profile.ownerId || null);
+    setActiveAccessLevel(profile.accessLevel || (profile.source === 'shared' ? 'view' : 'owner'));
     setTab('one');
     setStartupStep('ready');
   };
+
 
   const saveProfilesLocal = (next: SavedProfile[]) => {
     setProfiles(next);
     saveStoredProfiles(next.filter((item) => item.source === 'local'));
   };
+
+  const canEditCloudCase = (profile: SavedProfile) =>
+    !!currentUser &&
+    profile.source !== 'local' &&
+    (currentProfile?.role === 'owner' ||
+      profile.ownerId === currentUser.id ||
+      profile.accessLevel === 'edit');
+
+  const canManageSharing = (profile: SavedProfile) =>
+    !!currentUser &&
+    profile.source !== 'local' &&
+    (currentProfile?.role === 'owner' || profile.ownerId === currentUser.id);
+
 
   const saveToProfile = async () => {
     const caseName = (
@@ -512,22 +706,59 @@ function App() {
     const nextState = { ...state, caseName };
 
     if (supabaseEnabled && currentUser) {
-      const { error } = await supabase.from('broker_cases').upsert(
-        {
-          owner_id: currentUser.id,
-          case_name: caseName,
-          app_state: nextState,
-          updated_at: niceNow(),
-        },
-        { onConflict: 'owner_id,case_name' },
-      );
+      const editableLoadedCase =
+        !!activeCaseId &&
+        (currentProfile?.role === 'owner' ||
+          activeCaseOwnerId === currentUser.id ||
+          activeAccessLevel === 'edit');
+
+      if (editableLoadedCase && activeCaseId) {
+        const { error } = await supabase
+          .from('broker_cases')
+          .update({
+            case_name: caseName,
+            app_state: nextState,
+            updated_at: niceNow(),
+          })
+          .eq('id', activeCaseId);
+
+        if (error) {
+          setAuthMessage(error.message || 'Cloud save failed.');
+          return;
+        }
+
+        setState((prev) => ({ ...prev, caseName }));
+        setProfileNameDraft(caseName);
+        await refreshProfiles(currentUser, currentProfile);
+        return;
+      }
+
+      const payload = {
+        owner_id: currentUser.id,
+        case_name: caseName,
+        app_state: nextState,
+        updated_at: niceNow(),
+      };
+
+      const { error } = await supabase.from('broker_cases').upsert(payload, {
+        onConflict: 'owner_id,case_name',
+      });
+
       if (error) {
         setAuthMessage(error.message || 'Cloud save failed.');
         return;
       }
+
+      if (activeCaseId && activeAccessLevel === 'view') {
+        setAuthMessage('View-only shared case saved as your own copy.');
+      }
+
+      setActiveCaseId(null);
+      setActiveCaseOwnerId(currentUser.id);
+      setActiveAccessLevel('owner');
       setState((prev) => ({ ...prev, caseName }));
       setProfileNameDraft(caseName);
-      await refreshProfiles(currentUser);
+      await refreshProfiles(currentUser, currentProfile);
       return;
     }
 
@@ -540,6 +771,7 @@ function App() {
       savedAt: niceNow(),
       state: nextState,
       source: 'local',
+      accessLevel: 'owner',
     };
     const next = [profile, ...profiles.filter((item) => !(item.source === 'local' && item.brokerName === brokerName && item.caseName === caseName))];
     saveProfilesLocal(next);
@@ -547,21 +779,29 @@ function App() {
     setProfileNameDraft(caseName);
   };
 
+
   const deleteProfileById = async (id: string) => {
     const profile = profiles.find((item) => item.id === id);
     if (!profile) return;
-    if (profile.source === 'cloud' && supabaseEnabled && currentUser) {
-      const { error } = await supabase.from('broker_cases').delete().eq('id', id).eq('owner_id', currentUser.id);
+    if (profile.source !== 'local' && supabaseEnabled && currentUser) {
+      const canDelete =
+        currentProfile?.role === 'owner' || profile.ownerId === currentUser.id;
+      if (!canDelete) {
+        setAuthMessage('You do not have permission to delete this case.');
+        return;
+      }
+      const { error } = await supabase.from('broker_cases').delete().eq('id', id);
       if (error) {
         setAuthMessage(error.message || 'Delete failed.');
         return;
       }
-      await refreshProfiles(currentUser);
+      await refreshProfiles(currentUser, currentProfile);
       return;
     }
     const next = profiles.filter((profile) => profile.id !== id);
     saveProfilesLocal(next);
   };
+
 
   const renameProfileById = async (id: string) => {
     const profile = profiles.find((item) => item.id === id);
@@ -569,12 +809,15 @@ function App() {
     const nextName = window.prompt('Rename saved case', profile.caseName)?.trim();
     if (!nextName) return;
 
-    if (profile.source === 'cloud' && supabaseEnabled && currentUser) {
+    if (profile.source !== 'local' && supabaseEnabled && currentUser) {
+      if (!canEditCloudCase(profile)) {
+        setAuthMessage('You do not have permission to rename this case.');
+        return;
+      }
       const { error } = await supabase
         .from('broker_cases')
         .update({ case_name: nextName, updated_at: niceNow(), app_state: { ...profile.state, caseName: nextName } })
-        .eq('id', id)
-        .eq('owner_id', currentUser.id);
+        .eq('id', id);
       if (error) {
         setAuthMessage(error.message || 'Rename failed.');
         return;
@@ -583,7 +826,7 @@ function App() {
         setState((prev) => ({ ...prev, caseName: nextName }));
         setProfileNameDraft(nextName);
       }
-      await refreshProfiles(currentUser);
+      await refreshProfiles(currentUser, currentProfile);
       return;
     }
 
@@ -599,13 +842,14 @@ function App() {
     }
   };
 
+
   const duplicateProfileById = async (id: string) => {
     const profile = profiles.find((item) => item.id === id);
     if (!profile) return;
     const nextName = window.prompt('Duplicate case as', `${profile.caseName} Copy`)?.trim();
     if (!nextName) return;
 
-    if (profile.source === 'cloud' && supabaseEnabled && currentUser) {
+    if (profile.source !== 'local' && supabaseEnabled && currentUser) {
       const { error } = await supabase.from('broker_cases').insert({
         owner_id: currentUser.id,
         case_name: nextName,
@@ -615,7 +859,7 @@ function App() {
         setAuthMessage(error.message || 'Duplicate failed.');
         return;
       }
-      await refreshProfiles(currentUser);
+      await refreshProfiles(currentUser, currentProfile);
       return;
     }
 
@@ -626,9 +870,62 @@ function App() {
       savedAt: niceNow(),
       state: { ...profile.state, caseName: nextName },
       source: 'local',
+      accessLevel: 'owner',
     };
     saveProfilesLocal([duplicate, ...profiles]);
   };
+
+  const shareCaseById = async (id: string) => {
+    const profile = profiles.find((item) => item.id === id);
+    if (!profile || !currentUser || !supabaseEnabled) return;
+    if (!canManageSharing(profile)) {
+      setAuthMessage('You do not have permission to share this case.');
+      return;
+    }
+
+    const email = window.prompt('Share this case with which internal user email?')?.trim().toLowerCase();
+    if (!email) return;
+
+    const rawAccess = window.prompt('Access level: type "view" or "edit"', 'view')?.trim().toLowerCase();
+    const accessLevel: 'view' | 'edit' = rawAccess === 'edit' ? 'edit' : 'view';
+
+    const { data: target, error: targetError } = await supabase
+      .from('profiles')
+      .select('id, email')
+      .eq('email', email)
+      .maybeSingle();
+
+    if (targetError) {
+      setAuthMessage(targetError.message || 'Could not find that user.');
+      return;
+    }
+    if (!target?.id) {
+      setAuthMessage('That user has not signed in yet, so they do not have a profile to share with.');
+      return;
+    }
+    if (target.id === profile.ownerId) {
+      setAuthMessage('The case owner already has access.');
+      return;
+    }
+
+    const { error } = await supabase.from('case_access').upsert(
+      {
+        case_id: profile.id,
+        user_id: target.id,
+        access_level: accessLevel,
+        granted_by: currentUser.id,
+      },
+      { onConflict: 'case_id,user_id' },
+    );
+
+    if (error) {
+      setAuthMessage(error.message || 'Share failed.');
+      return;
+    }
+
+    setAuthMessage(`Shared "${profile.caseName}" with ${email} as ${accessLevel}.`);
+  };
+
 
   const signOutOrChangeAccount = async () => {
     setProfileSearch('');
@@ -636,6 +933,10 @@ function App() {
       await supabase.auth.signOut();
     }
     setCurrentUser(null);
+    setCurrentProfile(null);
+    setActiveCaseId(null);
+    setActiveCaseOwnerId(null);
+    setActiveAccessLevel(null);
     setStorageMode('local');
     setState((prev) => ({ ...prev, meta: { ...prev.meta, brokerName: '' } }));
     setStartupStep('auth');
@@ -1232,6 +1533,7 @@ function App() {
         <div className="field-grid">
           {field('Brand name', state.meta.brandName, (v) => patchMeta('brandName', v as string))}
           <label className="field"><span>Signed-in broker</span><input type="text" value={state.meta.brokerName} readOnly /></label>
+          <label className="field"><span>Role</span><input type="text" value={currentProfile?.role || (currentUser ? 'worker' : 'guest')} readOnly /></label>
           <label className="field"><span>Storage mode</span><input type="text" value={storageMode === 'cloud' ? 'Cloud (Supabase)' : 'Local browser only'} readOnly /></label>
           <label className="field"><span>Account email</span><input type="text" value={currentUser?.email || 'Guest / not signed in'} readOnly /></label>
           {field('Local profile case name', profileNameDraft, (v) => setProfileNameDraft(v as string))}
@@ -1257,7 +1559,9 @@ function App() {
         </div>
         {state.meta.brokerName !== 'Guest' && (
           <div className="profile-list">
-            <div className="profile-list-title">Saved cases for {state.meta.brokerName || 'Broker'}</div>
+            <div className="profile-list-title">
+              {currentProfile?.role === 'owner' ? 'All cloud cases' : 'My cloud cases and shared cases'}
+            </div>
             <label className="field profile-search-field">
               <span>Search saved cases</span>
               <input type="text" value={profileSearch} onChange={(e) => setProfileSearch(e.target.value)} placeholder="Search by case name..." />
@@ -1266,13 +1570,25 @@ function App() {
               <div className="profile-row" key={profile.id}>
                 <div>
                   <div className="profile-name">{profile.caseName}</div>
-                  <div className="profile-meta">{new Date(profile.savedAt).toLocaleString()}</div>
+                  <div className="profile-meta">
+                    {new Date(profile.savedAt).toLocaleString()}
+                    {profile.source !== 'local' ? ` • ${profile.source === 'shared' ? 'Shared' : 'Cloud'}` : ' • Local'}
+                    {profile.source !== 'local' && profile.ownerEmail ? ` • Owner: ${profile.ownerEmail}` : ''}
+                    {profile.accessLevel ? ` • Access: ${profile.accessLevel}` : ''}
+                  </div>
                 </div>
                 <div className="profile-actions">
                   <button className="secondary" onClick={() => loadProfileById(profile.id)}>Load</button>
-                  <button className="secondary" onClick={() => renameProfileById(profile.id)}>Rename</button>
+                  {(profile.source === 'local' || canEditCloudCase(profile)) && (
+                    <button className="secondary" onClick={() => renameProfileById(profile.id)}>Rename</button>
+                  )}
                   <button className="secondary" onClick={() => duplicateProfileById(profile.id)}>Duplicate</button>
-                  <button className="ghost danger" onClick={() => deleteProfileById(profile.id)}>Delete</button>
+                  {profile.source !== 'local' && canManageSharing(profile) && (
+                    <button className="secondary" onClick={() => void shareCaseById(profile.id)}>Share</button>
+                  )}
+                  {(profile.source === 'local' || currentProfile?.role === 'owner' || profile.ownerId === currentUser?.id) && (
+                    <button className="ghost danger" onClick={() => deleteProfileById(profile.id)}>Delete</button>
+                  )}
                 </div>
               </div>
             )) : <div className="muted">No saved cases matched yet.</div>}
@@ -1283,7 +1599,7 @@ function App() {
         <h2>Deployment notes</h2>
         <ul className="feature-list">
           <li>For cloud sign-in, add <code>VITE_SUPABASE_URL</code> and <code>VITE_SUPABASE_ANON_KEY</code> to your local <code>.env</code> and your host.</li>
-          <li>Run the included SQL script once in Supabase to create the <code>broker_cases</code> table and policies.</li>
+          <li>Run the included SQL script once in Supabase to create the <code>profiles</code>, <code>broker_cases</code>, and <code>case_access</code> tables and policies.</li>
           <li>Guest mode still works locally if Supabase is not configured yet.</li>
         </ul>
         {authMessage && <p className="muted">{authMessage}</p>}
@@ -1374,7 +1690,7 @@ function App() {
 
             {startupStep === 'brokerMenu' && (
               <>
-                <div className="eyebrow">Welcome, {state.meta.brokerName || 'Broker'}</div>
+                <div className="eyebrow">Welcome, {state.meta.brokerName || 'Broker'}{currentProfile?.role ? ` (${currentProfile.role})` : ''}</div>
                 <h2>Choose how you’d like to continue</h2>
                 <div className="startup-menu">
                   <button onClick={createNewCase}>Create New Case</button>
