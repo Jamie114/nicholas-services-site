@@ -1,3 +1,4 @@
+import { residentialDuty, schemePriceCap, AUSTRALIAN_STATES, type AustralianState, type HomeKind } from './duty';
 export type Frequency = 'Monthly' | 'Fortnightly' | 'Weekly';
 export type PurchaseType = 'PPR' | 'FHOG' | 'Investment';
 export type ApplicantType = 'Single' | 'Couple';
@@ -21,6 +22,13 @@ export const DEFAULTS = {
   oneProperty: {
     scenarioName: '',
     purchaseType: '' as PurchaseType | '',
+    state: 'VIC' as AustralianState,
+    homeKind: 'Established' as HomeKind,
+    firstHomeEligible: false, // Legacy saved-case field; relief is now automatic.
+    firstHomeReliefOptOut: false,
+    ntPackageEligible: false,
+    lmiBasis: 'Lender / professional waiver' as 'Lender / professional waiver' | '5% Deposit Scheme',
+    schemeArea: '' as '' | 'Capital / eligible regional centre' | 'Other areas',
     interestRate: '',
     loanTerm: '',
     housePrice: '',
@@ -31,7 +39,7 @@ export const DEFAULTS = {
     useGuarantor: false,
     enableOopLimit: false,
     lmiExempt: false,
-    exemptCap: '',
+    exemptCap: '95',
     repaymentFrequency: '' as Frequency | '',
     extraPrincipal: '',
     yearlyIncome: '',
@@ -39,6 +47,7 @@ export const DEFAULTS = {
   },
   twoProperties: {
     scenarioName: '',
+    state: 'VIC' as AustralianState,
     interestRate: '',
     loanTerm: '',
     currentMortgage: '',
@@ -98,14 +107,6 @@ export const DEFAULTS = {
   },
 };
 
-const STAMP_DUTY_BANDS: Array<[number, number, number]> = [
-  [0, 0, 0.014],
-  [25000, 350, 0.024],
-  [130000, 2870, 0.06],
-  [960000, 0, 0.055],
-  [2000000, 110000, 0.065],
-];
-
 const LMI_BANDS: Array<[number, number]> = [
   [0.0, 0.0],
   [0.8001, 0.016],
@@ -132,38 +133,14 @@ const LAND_TAX_BANDS: Array<[number, number, number]> = [
   [1000000, 4650, 0.009],
 ];
 
-const PURCHASE_TYPES = {
-  PPR: {
-    description: 'Standard owner-occupier purchase. No first home buyer concessions apply unless separately eligible.',
-    fhogPriceLimit: 0,
-    fullSdExemptUpto: 0,
-    sdConcessionLimit: 0,
-    maxFhogLvr: 0,
-    applyFhog: false,
-    applySdConcession: false,
-  },
-  FHOG: {
-    description: 'First home buyer style scenario. House price capped at $950,000 and max LVR 95% for FHOG check.',
-    fhogPriceLimit: 950000,
-    fullSdExemptUpto: 600000,
-    sdConcessionLimit: 750000,
-    maxFhogLvr: 0.95,
-    applyFhog: true,
-    applySdConcession: true,
-  },
-  Investment: {
-    description: 'Investment purchase. No FHOG or first-home stamp duty concession applies.',
-    fhogPriceLimit: 0,
-    fullSdExemptUpto: 0,
-    sdConcessionLimit: 0,
-    maxFhogLvr: 0,
-    applyFhog: false,
-    applySdConcession: false,
-  },
+const PURCHASE_TYPES: Record<PurchaseType, { description: string }> = {
+  PPR: { description: 'Owner-occupier purchase; applicable home concessions depend on eligibility.' },
+  FHOG: { description: 'First home buyer purchase; duty relief and LMI waivers require separate eligibility checks.' },
+  Investment: { description: 'Investment purchase; first-home duty relief is not applied.' },
 };
 
 export const DISCLAIMER =
-  'All calculations are based on the uploaded spreadsheet as at 20/03/2026 and are for Victoria only. This app is for general information and education only and is not financial, legal, or tax advice. Please verify assumptions and speak with a qualified professional before relying on the outputs.';
+  'Residential duty estimates use selected state rules as at 2 November 2026, for standard home purchases. Eligibility, transaction dates, concessions, surcharges, state land tax and fees must be checked independently. Financial estimates are indicative, not loan approval or financial advice.';
 
 export const parseNumber = (value: string | number | boolean, fallback = 0): number => {
   const parsed = typeof value === 'number' ? value : Number.parseFloat(String(value).replace(/,/g, '').replace(/\$/g, '').trim());
@@ -230,29 +207,13 @@ export const amortizationInterestOverPeriod = (
   return interestPaid;
 };
 
-export const stampDuty = (price: number, purchaseType: PurchaseType): number => {
-  if (price <= 0) return 0;
-  const [threshold, base, rate] = pickBandRate(price, STAMP_DUTY_BANDS);
-  const duty = base + (price - threshold) * rate;
-  const cfg = PURCHASE_TYPES[purchaseType];
-  if (!cfg.applySdConcession) return Math.max(duty, 0);
-  if (price <= cfg.fullSdExemptUpto) return 0;
-  if (price >= cfg.sdConcessionLimit) return Math.max(duty, 0);
-  const scale = (price - cfg.fullSdExemptUpto) / (cfg.sdConcessionLimit - cfg.fullSdExemptUpto);
-  return Math.max(duty * scale, 0);
-};
-
-export const fhogStatus = (price: number, lvr: number, purchaseType: PurchaseType): string => {
-  const cfg = PURCHASE_TYPES[purchaseType];
-  if (!cfg.applyFhog) return 'N/A';
-  if (price <= cfg.fhogPriceLimit && lvr <= cfg.maxFhogLvr) return 'Eligible for FHOG';
-  return 'Does not qualify for FHOG';
-};
+export const stampDuty = (price: number, purchaseType: PurchaseType, state: AustralianState = 'VIC', firstHomeEligible = false, kind: HomeKind = 'Established'): number =>
+  residentialDuty(price, state, purchaseType !== 'Investment', purchaseType === 'FHOG' && firstHomeEligible, kind);
 
 export const lmiCost = (propertyValue: number, loanAmount: number, exempt = false, exemptCap = 0.9): number => {
   if (propertyValue <= 0 || loanAmount <= 0) return 0;
   const lvr = loanAmount / propertyValue;
-  if (exempt && lvr <= exemptCap) return 0;
+  if (exempt && lvr <= exemptCap + 1e-10) return 0;
   let rate = 0;
   for (const [threshold, bandRate] of LMI_BANDS) {
     if (lvr >= threshold) rate = bandRate;
@@ -338,10 +299,10 @@ export const buildOnePropertyRecommendations = ({
 }: {
   price: number; purchaseType: PurchaseType; fhogBad: boolean; finalLoan: number; lmi: number; oop: number; maxCashContribution: number; extraCash: number; affordabilityRatio?: number; monthlyIncome: number; monthlyRepayment: number; bufferAfterHousing?: number; useGuarantor: boolean; maxPurchaseMode: boolean;
 }): string[] => {
-  const cfg = PURCHASE_TYPES[purchaseType];
+  void purchaseType;
   const actions: string[] = [];
   const cashShortfall = maxCashContribution > 0 ? Math.max(0, oop - maxCashContribution) : 0;
-  if (fhogBad) actions.push(`Keep the purchase price at or below ${formatMoney(cfg.fhogPriceLimit)} and the base LVR at or below ${(cfg.maxFhogLvr * 100).toFixed(1)}% for FHOG.`);
+  if (fhogBad) actions.push('Review the purchase eligibility and lending policy.');
   if (extraCash > 0) actions.push(`The structure is short by about ${formatMoney(extraCash)} on borrowing power. Lift approval, add cash, or reduce the target price.`);
   if (cashShortfall > 0) actions.push(`Cash to complete is about ${formatMoney(cashShortfall)} above the entered contribution cap.`);
   if (lmi > 0 && price > 0) {
@@ -376,30 +337,40 @@ export const calcOneProperty = (inputs: OnePropertyInputs) => {
   const yearlyIncome = parseNumber(inputs.yearlyIncome);
   const monthlyIncome = yearlyIncome / 12;
   const livingExpenses = parseNumber(inputs.livingExpensesMonthly);
-  const exemptCap = parseNumber(inputs.exemptCap, 90) / 100;
+  const waiverCapPercent = parseNumber(inputs.exemptCap ?? '95', NaN);
+  const exemptCap = waiverCapPercent / 100;
+  const professionalWaiverSelected = !!inputs.lmiExempt && inputs.lmiBasis !== '5% Deposit Scheme';
+  const validWaiverCap = Number.isFinite(waiverCapPercent) && waiverCapPercent > 0 && waiverCapPercent <= 100;
   const transferFees = 2000;
   const inputPrice = parseNumber(inputs.housePrice);
   const extraPrincipal = parseNumber(inputs.extraPrincipal);
   const useGuarantor = !!inputs.useGuarantor;
   const lmiExempt = !!inputs.lmiExempt || useGuarantor;
 
-  const cfg = PURCHASE_TYPES[purchaseType];
-  const maxBaseLvr = purchaseType === 'FHOG' ? cfg.maxFhogLvr : 0.95;
-  const appliedLvr = Math.min(requestedLvr || 0, maxBaseLvr);
+  const state: AustralianState = AUSTRALIAN_STATES.includes(inputs.state) ? inputs.state : 'VIC';
+  const kind: HomeKind = inputs.homeKind === 'New' ? 'New' : 'Established';
+  const maxBaseLvr = 0.95;
+  // A selected professional waiver is a goal for this scenario, so stay within its cap.
+  // The entered desired LVR remains intact for comparison if the waiver is switched off.
+  const appliedLvr = professionalWaiverSelected && !validWaiverCap
+    ? 0
+    : Math.min(Math.max(requestedLvr || 0, 0), maxBaseLvr, professionalWaiverSelected ? exemptCap : 1);
+  const waiverLimitsLvr = professionalWaiverSelected && validWaiverCap && requestedLvr > appliedLvr + 1e-10 && exemptCap <= maxBaseLvr;
 
   const evaluatePrice = (candidatePrice: number) => {
     const price = Math.max(0, candidatePrice);
     const requiredLoan = price * appliedLvr;
     const finalLoan = approvalMax > 0 ? Math.min(requiredLoan, approvalMax) : requiredLoan;
     const extraCash = approvalMax > 0 ? Math.max(0, requiredLoan - approvalMax) : 0;
-    const sd = stampDuty(price, purchaseType);
+    const ntRelief = state === 'NT' && purchaseType !== 'Investment' && kind === 'New' && !!inputs.ntPackageEligible;
+    const sd = ntRelief ? 0 : stampDuty(price, purchaseType, state, !inputs.firstHomeReliefOptOut, kind);
     const baseLvr = price > 0 ? finalLoan / price : 0;
-    const fhogLmiWaived =
-      purchaseType === 'FHOG' &&
-      price <= cfg.fhogPriceLimit &&
-      baseLvr <= cfg.maxFhogLvr;
-
-    const lmi = useGuarantor ? 0 : (fhogLmiWaived ? 0 : lmiCost(price, finalLoan, lmiExempt, exemptCap || 0.9));
+    const schemeSelected = inputs.lmiBasis === '5% Deposit Scheme';
+    const schemeArea = inputs.schemeArea;
+    const schemeCap = schemeArea === 'Other areas' || schemeArea === 'Capital / eligible regional centre' ? schemePriceCap(state, schemeArea) : 0;
+    const schemeWaiver = lmiExempt && schemeSelected && purchaseType === 'FHOG' && price <= schemeCap && baseLvr <= 0.95;
+    const professionalWaiver = lmiExempt && !schemeSelected;
+    const lmi = useGuarantor ? 0 : lmiCost(price, finalLoan, schemeWaiver || professionalWaiver, schemeWaiver ? 0.95 : exemptCap);
     const loanPlusLmi = finalLoan + lmi;
     const effectiveLvr = price > 0 ? loanPlusLmi / price : 0;
     const repayment = periodicPayment(loanPlusLmi, rate, years, frequency);
@@ -414,7 +385,6 @@ export const calcOneProperty = (inputs: OnePropertyInputs) => {
       extraCash,
       stampDuty: sd,
       baseLvr,
-      fhogLmiWaived,
       lmi,
       loanPlusLmi,
       effectiveLvr,
@@ -425,10 +395,10 @@ export const calcOneProperty = (inputs: OnePropertyInputs) => {
     };
   };
 
-  let maxPurchasePrice = inputPrice;
+  let maxPurchasePrice = inputs.maxPurchaseMode ? 0 : inputPrice;
   let modeNote = '';
   let oopLimitStatus = 'No limit applied';
-  let price = inputPrice;
+  let price = inputs.maxPurchaseMode ? 0 : inputPrice;
 
   if (inputs.maxPurchaseMode && appliedLvr > 0) {
     if (maxCashContribution > 0) {
@@ -436,7 +406,6 @@ export const calcOneProperty = (inputs: OnePropertyInputs) => {
         approvalMax > 0
           ? Math.max(inputPrice, approvalMax / Math.max(appliedLvr, 1e-9) + maxCashContribution + transferFees + 250000)
           : Math.max(inputPrice, maxCashContribution / Math.max(1 - appliedLvr, 0.05) + transferFees + 250000);
-      if (purchaseType === 'FHOG') high = Math.min(high, cfg.fhogPriceLimit * 1.1);
       let low = 0;
       let best = 0;
       for (let i = 0; i < 55; i += 1) {
@@ -449,16 +418,20 @@ export const calcOneProperty = (inputs: OnePropertyInputs) => {
           high = mid;
         }
       }
-      maxPurchasePrice = Math.round(best);
+      maxPurchasePrice = Math.floor(best + 1e-7);
       modeNote = `Maximum purchase price solved using cash cap of ${formatMoney(maxCashContribution)}.`;
     } else if (approvalMax > 0) {
       maxPurchasePrice = Math.round(approvalMax / Math.max(appliedLvr, 1e-9));
       modeNote = 'Maximum purchase price solved using the loan approval limit only.';
     } else {
-      maxPurchasePrice = inputPrice;
+      maxPurchasePrice = 0;
       modeNote = 'Maximum purchase mode is on, but it needs a cash cap and/or approval limit to reverse-solve a price.';
     }
     price = maxPurchasePrice;
+  } else if (inputs.maxPurchaseMode) {
+    modeNote = professionalWaiverSelected && !validWaiverCap
+      ? 'Enter a valid maximum LVR for the waiver to calculate a maximum price.'
+      : 'Enter a desired LVR and a cash budget and/or loan approval limit to calculate a maximum price.';
   }
 
   let result = evaluatePrice(price);
@@ -508,19 +481,22 @@ export const calcOneProperty = (inputs: OnePropertyInputs) => {
     oop,
   } = result;
 
-  const fhog = fhogStatus(price, baseLvr, purchaseType);
-  const fhogBad = purchaseType === 'FHOG' && fhog !== 'Eligible for FHOG';
+  const fhogBad = false;
+  const firstHomeStatus = purchaseType !== 'FHOG' ? 'Not selected' : inputs.firstHomeReliefOptOut ? 'Not applied — buyer marked ineligible' : 'State rules applied where available; eligibility assumed';
   const monthlyRepaymentEquiv = repayment * periodsPerYear(frequency) / 12;
   const affordabilityRatio = monthlyIncome > 0 ? monthlyRepaymentEquiv / monthlyIncome : undefined;
   const bufferAfterHousing = monthlyIncome > 0 ? monthlyIncome - monthlyRepaymentEquiv - livingExpenses : undefined;
 
-  const deal = scoreOnePropertyScenario({
+  const incomplete = price <= 0 || appliedLvr <= 0;
+  const scoredDeal = scoreOnePropertyScenario({
     maxPurchaseMode: inputs.maxPurchaseMode,
     fhogBad,
     baseLvr,
     affordabilityRatio,
     bufferAfterHousing,
   });
+
+  const deal: { text: string; tone: AlertTone } = incomplete ? { text: 'Add inputs to calculate', tone: 'info' } : scoredDeal;
 
   const cashShortfall = maxCashContribution > 0 ? Math.max(0, oop - maxCashContribution) : 0;
   const whyLimit = fhogBad
@@ -557,7 +533,7 @@ export const calcOneProperty = (inputs: OnePropertyInputs) => {
     useGuarantor,
     maxPurchaseMode: inputs.maxPurchaseMode,
   });
-  const bestNextMove = recommendations[0] ?? 'Review the structure against your policy, cash, and comfort settings.';
+  const bestNextMove = incomplete ? 'Enter a property price or maximum-price limits and a desired LVR.' : recommendations[0] ?? 'Review the structure against your policy, cash, and comfort settings.';
 
   const warnings: string[] = [];
   let warningTone: AlertTone = 'good';
@@ -565,14 +541,28 @@ export const calcOneProperty = (inputs: OnePropertyInputs) => {
     warnings.push(modeNote || 'Maximum purchase price mode is active.');
     warningTone = 'info';
   }
-  if (fhogBad) {
-    warnings.push('FHOG selected but this scenario does not qualify under the current price/LVR.');
-    warningTone = 'bad';
+  if (professionalWaiverSelected && !validWaiverCap) warnings.push('Enter a waiver maximum LVR greater than 0% and no more than 100%; the scenario is paused until then.');
+  if (waiverLimitsLvr) {
+    warnings.push(`Desired LVR ${formatPercent(requestedLvr)} was reduced to ${formatPercent(appliedLvr)} to stay within the selected LMI waiver limit.`);
+    warningTone = 'info';
   }
-  if (requestedLvr > 0.95 && !useGuarantor) {
+  if (purchaseType === 'FHOG' && inputs.firstHomeReliefOptOut) warnings.push('First-home duty relief is switched off for this scenario.');
+  if (purchaseType === 'FHOG' && !inputs.firstHomeReliefOptOut) warnings.push('First-home duty relief is applied where available, assuming all buyers qualify. Confirm conditions and transaction dates.');
+  if (inputs.maxPurchaseMode && maxCashContribution <= 0 && approvalMax > 0) warnings.push('No cash budget was entered, so available deposit and costs have not limited this result.');
+  if (inputs.maxPurchaseMode && maxCashContribution > 0 && approvalMax <= 0) warnings.push('No loan approval limit was entered, so borrowing capacity has not limited this result.');
+  if (state === 'NT' && !(inputs.ntPackageEligible && purchaseType !== 'Investment' && kind === 'New')) warnings.push('NT house-and-land package exemptions are not automatically included; check the Territory Revenue Office.');
+  if (state === 'NT' && inputs.ntPackageEligible && purchaseType !== 'Investment' && kind === 'New') warnings.push('NT package exemption applies only if all conditions and contract dates are met.');
+  if (state === 'TAS' && purchaseType === 'FHOG') warnings.push('Tasmania first-home relief depends on settlement date; current estimates exclude historical concessions.');
+  if (inputs.lmiExempt && inputs.lmiBasis === '5% Deposit Scheme') {
+    const schemeCap = inputs.schemeArea === 'Other areas' || inputs.schemeArea === 'Capital / eligible regional centre' ? schemePriceCap(state, inputs.schemeArea) : 0;
+    warnings.push(schemeCap ? `5% Deposit Scheme: selected area cap ${formatMoney(schemeCap)}. Confirm postcode, lender valuation and full eligibility; approval is not assessed.` : 'Select the correct scheme price-cap area; the scheme LMI waiver has not been applied.');
+    if (price > schemeCap || purchaseType !== 'FHOG' || baseLvr > 0.95) warnings.push('5% Deposit Scheme LMI waiver not applied: review price, purchase type and LVR.');
+  } else if (inputs.lmiExempt) warnings.push('LMI waiver assumes lender or professional eligibility has been confirmed.');
+  if (new Date().getFullYear() > 2026) warnings.push('Duty rates were reviewed for 2026 and may have changed; verify current rates.');
+  if (appliedLvr > 0.95 && !useGuarantor) {
     warnings.push('Above 95% LVR normally means limited lender options and elevated risk.');
     warningTone = 'bad';
-  } else if (requestedLvr > 0.90 && warningTone !== 'bad') {
+  } else if (appliedLvr > 0.90) {
     warnings.push('Above 90% LVR means LMI can become expensive and valuations matter more.');
     warningTone = 'warn';
   }
@@ -594,6 +584,9 @@ export const calcOneProperty = (inputs: OnePropertyInputs) => {
 
   return {
     tone: deal.tone,
+    isComplete: !incomplete,
+    waiverLimitsLvr,
+    invalidWaiverCap: professionalWaiverSelected && !validWaiverCap,
     deal,
     description: inputs.maxPurchaseMode
       ? `${PURCHASE_TYPES[purchaseType].description} Maximum purchase price mode is currently active.`
@@ -604,11 +597,13 @@ export const calcOneProperty = (inputs: OnePropertyInputs) => {
       'Scenario Description': inputs.maxPurchaseMode
         ? `${PURCHASE_TYPES[purchaseType].description} Maximum purchase price mode is currently active.`
         : PURCHASE_TYPES[purchaseType].description,
-      'Maximum Purchase Price': formatMoney(maxPurchasePrice || price),
+      'Maximum Purchase Price': price > 0 ? formatMoney(maxPurchasePrice || price) : '-',
       'Stamp Duty': formatMoney(sd),
       'Transfer Fees': formatMoney(transferFees),
       'LMI Costs': formatMoney(lmi),
-      'FHOG Status': fhog,
+      'State / territory': state,
+      'First-home duty relief': firstHomeStatus,
+      '5% Scheme area price cap': inputs.lmiExempt && inputs.lmiBasis === '5% Deposit Scheme' && (inputs.schemeArea === 'Other areas' || inputs.schemeArea === 'Capital / eligible regional centre') ? formatMoney(schemePriceCap(state, inputs.schemeArea)) : 'Not selected',
       'Required Loan': formatMoney(requiredLoan),
       'Final Loan': formatMoney(finalLoan),
       'Extra Cash Required Due to Approval Limit': formatMoney(extraCash),
@@ -636,12 +631,12 @@ export const calcOneProperty = (inputs: OnePropertyInputs) => {
       'Repayment @ 6.5%': formatMoney(periodicPayment(loanPlusLmi, 6.5, years, frequency)),
     },
     atAGlance: [
-      { label: 'Maximum purchase price', value: formatMoney(maxPurchasePrice || price), tone: 'info' as AlertTone },
+      { label: inputs.maxPurchaseMode ? 'Maximum purchase price' : 'Property price', value: price > 0 ? formatMoney(price) : '-', tone: 'info' as AlertTone },
       { label: 'Out of pocket', value: formatMoney(oop), tone: maxCashContribution > 0 && oop > maxCashContribution ? 'warn' : 'good' as AlertTone },
       { label: 'Loan amount', value: formatMoney(finalLoan), tone: 'info' as AlertTone },
       { label: 'Effective LVR', value: formatPercent(effectiveLvr), tone: toneFromLvr(effectiveLvr) },
       { label: 'Structure', value: deal.text, tone: deal.tone as AlertTone },
-      { label: `Repayment / ${paymentLabel(frequency)}`, value: formatMoney(repayment), tone: affordabilityRatio !== undefined && affordabilityRatio > 0.4 ? 'bad' : affordabilityRatio !== undefined && affordabilityRatio > 0.3 ? 'warn' : 'good' as AlertTone },
+      { label: `Repayment / ${paymentLabel(frequency)}`, value: rate > 0 && years > 0 ? formatMoney(repayment) : 'Enter rate and term', tone: affordabilityRatio !== undefined && affordabilityRatio > 0.4 ? 'bad' : affordabilityRatio !== undefined && affordabilityRatio > 0.3 ? 'warn' : 'good' as AlertTone },
     ],
     decisionGuide: [
       { label: 'Why this result', value: whyLimit },
@@ -701,7 +696,8 @@ export const calcTwoProperties = (inputs: TwoPropertyInputs) => {
   const mortgageAfterDraw = withdraw80 ? 0.8 * currentValue : currentMortgage;
   const equityWithdrawn = withdraw80 ? mortgageAfterDraw - currentMortgage : 0;
 
-  const stamp = stampDuty(secondPrice, 'Investment');
+  const secondState: AustralianState = AUSTRALIAN_STATES.includes(inputs.state) ? inputs.state : 'VIC';
+  const stamp = stampDuty(secondPrice, 'Investment', secondState);
   const totalAssets = currentValue + secondPrice;
   const totalConsolidatedLoan = desiredLvr * totalAssets;
   const newLoanRequired = Math.max(0, totalConsolidatedLoan - mortgageAfterDraw);
@@ -742,6 +738,7 @@ export const calcTwoProperties = (inputs: TwoPropertyInputs) => {
 
   const warnings: string[] = [];
   let warningTone: AlertTone = 'good';
+  warnings.push('Property running costs and land tax use indicative Victorian assumptions; they are not state-specific.');
   if (desiredLvr > 0.95) {
     warnings.push('Desired consolidated LVR is above 95%. This is a high-leverage scenario.');
     warningTone = 'bad';
@@ -805,6 +802,7 @@ export const calcTwoProperties = (inputs: TwoPropertyInputs) => {
       'Total Assets': formatMoney(totalAssets),
       'Total Consolidated Loan Amount': formatMoney(totalConsolidatedLoan),
       'LMI Costs': formatMoney(lmi),
+      'New property state / territory': secondState,
       'Total Loan Amount + LMI': formatMoney(loanPlusLmi),
       'Extra Cash Required': formatMoney(extraCash),
       'Total Out-of-Pocket Expenses': formatMoney(oop),

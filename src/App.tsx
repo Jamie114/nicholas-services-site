@@ -1,7 +1,8 @@
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { supabase, supabaseEnabled, type AuthUser } from './supabaseClient';
 import { jsPDF } from 'jspdf';
+import { AUSTRALIAN_STATES, type AustralianState, type HomeKind } from './duty';
 import './styles.css';
 import {
   DEFAULTS,
@@ -39,7 +40,7 @@ const STORAGE_KEY = 'loan-web-v34';
 const PROFILE_STORAGE_KEY = 'loan-web-profiles-v36';
 
 type StartupStep = 'auth' | 'brokerMenu' | 'brokerLoad' | 'ready';
-type UserRole = 'owner' | 'worker';
+type UserRole = 'owner' | 'broker' | 'assistant';
 type AccessLevel = 'view' | 'edit' | 'owner';
 
 type AppProfile = {
@@ -233,6 +234,12 @@ function Actions({
 const INPUT_LABELS_ONE: Record<string, string> = {
   scenarioName: 'Scenario name',
   purchaseType: 'Purchase type',
+  state: 'State or territory',
+  homeKind: 'Property type',
+  firstHomeReliefOptOut: 'First-home duty relief switched off',
+  ntPackageEligible: 'NT house-and-land package exemption assumed eligible',
+  lmiBasis: 'LMI waiver basis',
+  schemeArea: '5% Scheme area',
   interestRate: 'Interest rate (%)',
   loanTerm: 'Loan term (years)',
   housePrice: 'House price',
@@ -257,6 +264,7 @@ const INPUT_LABELS_TWO: Record<string, string> = {
   currentMortgage: 'Current mortgage',
   currentValue: 'Current property value',
   secondPrice: 'Second house price',
+  state: 'New property state or territory',
   crossCollat: 'Cross-collateralisation for LMI',
   desiredLvr: 'Desired consolidated LVR (%)',
   withdraw80: 'Withdraw equity to 80%',
@@ -331,6 +339,7 @@ function App() {
   const [authBusy, setAuthBusy] = useState(false);
   const [authMessage, setAuthMessage] = useState('');
   const [currentUser, setCurrentUser] = useState<AuthUser | null>(null);
+  const authUserIdRef = useRef<string | null>(null);
   const [storageMode, setStorageMode] = useState<'cloud' | 'local'>(supabaseEnabled ? 'cloud' : 'local');
   const [currentProfile, setCurrentProfile] = useState<AppProfile | null>(null);
   const [activeCaseId, setActiveCaseId] = useState<string | null>(null);
@@ -360,6 +369,7 @@ function App() {
 
     if (existingError && existingError.code !== 'PGRST116') {
       setAuthMessage(existingError.message || 'Could not load your profile.');
+      return null;
     }
 
     if (existing) {
@@ -368,16 +378,13 @@ function App() {
 
     const { data: inserted, error: insertError } = await supabase
       .from('profiles')
-      .upsert(
-        {
-          id: user.id,
-          email: user.email || '',
-          full_name: fallbackName,
-          role: 'worker',
-          status: 'active',
-        },
-        { onConflict: 'id' },
-      )
+      .insert({
+        id: user.id,
+        email: user.email || '',
+        full_name: fallbackName,
+        role: 'broker',
+        status: 'active',
+      })
       .select(selectCols)
       .single();
 
@@ -395,10 +402,7 @@ function App() {
 
     if (supabaseEnabled && user) {
       const effectiveProfile = profile ?? (await ensureProfile(user));
-      if (!effectiveProfile) {
-        setProfiles(getStoredProfiles());
-        return;
-      }
+      if (!effectiveProfile) return;
 
       const ownerNameFallback = effectiveProfile.full_name?.trim() || brokerNameFromUser(user);
       const next: SavedProfile[] = [];
@@ -501,7 +505,7 @@ function App() {
         });
       }
 
-      setProfiles(next);
+      if (authUserIdRef.current === user.id) setProfiles(next);
       return;
     }
 
@@ -511,60 +515,56 @@ function App() {
 
   useEffect(() => {
     let active = true;
+    let generation = 0;
+    let timer: ReturnType<typeof setTimeout> | undefined;
 
     if (!supabaseEnabled) {
       setStorageMode('local');
-      setStartupStep(state.meta.brokerName ? 'brokerMenu' : 'auth');
-      return () => {
-        active = false;
-      };
+      return;
     }
 
-    supabase.auth.getSession().then(async ({ data, error }) => {
+    // Defer database requests until after Supabase releases its auth lock.
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
       if (!active) return;
-      const user = data.session?.user ?? null;
-      setCurrentUser(user);
-      setStorageMode(user ? 'cloud' : 'local');
-      if (user) {
-        const profile = await ensureProfile(user);
-        if (!active) return;
-        setCurrentProfile(profile);
-        const brokerName = profile?.full_name?.trim() || brokerNameFromUser(user);
-        setState((prev) => ({ ...prev, meta: { ...prev.meta, brokerName } }));
-        setStartupStep('brokerMenu');
-        void refreshProfiles(user, profile);
-      } else {
-        setCurrentProfile(null);
-        setStartupStep('auth');
-      }
-      if (error) setAuthMessage(error.message);
-    });
-
-    const {
-      data: { subscription },
-    } = supabase.auth.onAuthStateChange((_event, session) => {
-      if (!active) return;
+      if (event !== 'INITIAL_SESSION' && event !== 'SIGNED_IN' && event !== 'SIGNED_OUT') return;
       const user = session?.user ?? null;
+      if (event === 'SIGNED_IN' && user && authUserIdRef.current === user.id) return;
+      const request = ++generation;
+      if (timer) clearTimeout(timer);
+      authUserIdRef.current = user?.id ?? null;
       setCurrentUser(user);
       setStorageMode(user ? 'cloud' : 'local');
-      if (user) {
-        void (async () => {
-          const profile = await ensureProfile(user);
-          if (!active) return;
-          setCurrentProfile(profile);
-          const brokerName = profile?.full_name?.trim() || brokerNameFromUser(user);
-          setState((prev) => ({ ...prev, meta: { ...prev.meta, brokerName } }));
-          setStartupStep('brokerMenu');
-          await refreshProfiles(user, profile);
-        })();
-      } else {
+      if (!user) {
         setCurrentProfile(null);
+        setProfiles([]);
         setStartupStep('auth');
+        return;
       }
+      setAuthMessage('');
+      timer = setTimeout(() => {
+        void (async () => {
+          try {
+            const profile = await ensureProfile(user);
+            if (!active || generation !== request) return;
+            setCurrentProfile(profile);
+            const brokerName = profile?.full_name?.trim() || brokerNameFromUser(user);
+            setState((prev) => ({ ...prev, meta: { ...prev.meta, brokerName } }));
+            setStartupStep('brokerMenu');
+            if (profile) await refreshProfiles(user, profile);
+          } catch (error) {
+            if (active && generation === request) {
+              setAuthMessage(error instanceof Error ? error.message : 'Could not load your account.');
+              setStartupStep('brokerMenu');
+            }
+          }
+        })();
+      }, 0);
     });
-
     return () => {
       active = false;
+      generation++;
+      if (timer) clearTimeout(timer);
+      authUserIdRef.current = null;
       subscription.unsubscribe();
     };
   }, []);
@@ -589,7 +589,7 @@ function App() {
 
   const brokerProfiles = profiles
     .filter((profile) => {
-      if (profile.source === 'cloud') return true;
+      if (profile.source !== 'local') return true;
       return profile.brokerName === (state.meta.brokerName || '');
     })
     .filter((profile) => {
@@ -605,7 +605,7 @@ function App() {
       return;
     }
     const email = authEmail.trim();
-    const password = authPassword.trim();
+    const password = authPassword;
     if (!email || !password) {
       setAuthMessage('Please enter both email and password.');
       return;
@@ -616,7 +616,7 @@ function App() {
     try {
       const { error } = await supabase.auth.signInWithPassword({ email, password });
       if (error) throw error;
-      setAuthMessage('Signed in.');
+      setAuthPassword('');
     } catch (error: any) {
       setAuthMessage(error?.message || 'Authentication failed.');
     } finally {
@@ -647,6 +647,9 @@ function App() {
     setState(fresh);
     setProfileNameDraft('');
     setProfileSearch('');
+    setActiveCaseId(null);
+    setActiveCaseOwnerId(null);
+    setActiveAccessLevel(null);
     setTab('one');
     setStartupStep('ready');
   };
@@ -706,6 +709,10 @@ function App() {
     const nextState = { ...state, caseName };
 
     if (supabaseEnabled && currentUser) {
+      if (activeCaseId && activeAccessLevel === 'view' && currentProfile?.role !== 'owner') {
+        setAuthMessage('This case is view-only. Duplicate it to save your own copy.');
+        return;
+      }
       const editableLoadedCase =
         !!activeCaseId &&
         (currentProfile?.role === 'owner' ||
@@ -713,17 +720,19 @@ function App() {
           activeAccessLevel === 'edit');
 
       if (editableLoadedCase && activeCaseId) {
-        const { error } = await supabase
+        const { data: savedCase, error } = await supabase
           .from('broker_cases')
           .update({
             case_name: caseName,
             app_state: nextState,
             updated_at: niceNow(),
           })
-          .eq('id', activeCaseId);
+          .eq('id', activeCaseId)
+          .select('id')
+          .maybeSingle();
 
-        if (error) {
-          setAuthMessage(error.message || 'Cloud save failed.');
+        if (error || !savedCase) {
+          setAuthMessage(error?.message || 'The case was not saved. Check your access and try again.');
           return;
         }
 
@@ -790,9 +799,9 @@ function App() {
         setAuthMessage('You do not have permission to delete this case.');
         return;
       }
-      const { error } = await supabase.from('broker_cases').delete().eq('id', id);
-      if (error) {
-        setAuthMessage(error.message || 'Delete failed.');
+      const { data: deletedCase, error } = await supabase.from('broker_cases').delete().eq('id', id).select('id').maybeSingle();
+      if (error || !deletedCase) {
+        setAuthMessage(error?.message || 'The case was not deleted. Check your access and try again.');
         return;
       }
       await refreshProfiles(currentUser, currentProfile);
@@ -814,12 +823,12 @@ function App() {
         setAuthMessage('You do not have permission to rename this case.');
         return;
       }
-      const { error } = await supabase
+      const { data: renamedCase, error } = await supabase
         .from('broker_cases')
         .update({ case_name: nextName, updated_at: niceNow(), app_state: { ...profile.state, caseName: nextName } })
-        .eq('id', id);
-      if (error) {
-        setAuthMessage(error.message || 'Rename failed.');
+        .eq('id', id).select('id').maybeSingle();
+      if (error || !renamedCase) {
+        setAuthMessage(error?.message || 'The case was not renamed. Check your access and try again.');
         return;
       }
       if (state.caseName === profile.caseName) {
@@ -887,23 +896,25 @@ function App() {
     if (!email) return;
 
     const rawAccess = window.prompt('Access level: type "view" or "edit"', 'view')?.trim().toLowerCase();
-    const accessLevel: 'view' | 'edit' = rawAccess === 'edit' ? 'edit' : 'view';
+    if (!rawAccess) return;
+    if (rawAccess !== 'view' && rawAccess !== 'edit') {
+      setAuthMessage('Enter view or edit as the access level.');
+      return;
+    }
+    const accessLevel: 'view' | 'edit' = rawAccess;
 
-    const { data: target, error: targetError } = await supabase
-      .from('profiles')
-      .select('id, email')
-      .eq('email', email)
-      .maybeSingle();
+    const { data: targetId, error: targetError } = await supabase
+      .rpc('find_share_recipient', { target_email: email });
 
     if (targetError) {
       setAuthMessage(targetError.message || 'Could not find that user.');
       return;
     }
-    if (!target?.id) {
+    if (!targetId) {
       setAuthMessage('That user has not signed in yet, so they do not have a profile to share with.');
       return;
     }
-    if (target.id === profile.ownerId) {
+    if (targetId === profile.ownerId) {
       setAuthMessage('The case owner already has access.');
       return;
     }
@@ -911,7 +922,7 @@ function App() {
     const { error } = await supabase.from('case_access').upsert(
       {
         case_id: profile.id,
-        user_id: target.id,
+        user_id: targetId,
         access_level: accessLevel,
         granted_by: currentUser.id,
       },
@@ -930,7 +941,8 @@ function App() {
   const signOutOrChangeAccount = async () => {
     setProfileSearch('');
     if (supabaseEnabled && currentUser) {
-      await supabase.auth.signOut();
+      const { error } = await supabase.auth.signOut();
+      if (error) { setAuthMessage(error.message); return; }
     }
     setCurrentUser(null);
     setCurrentProfile(null);
@@ -1167,9 +1179,8 @@ function App() {
 
   const onePdfInputRows = () => {
     const entries = Object.entries(state.one)
-      .filter(([, value]) => String(value).trim() !== '')
-      .filter(([key]) => !(state.one.purchaseType === 'FHOG' && ['useGuarantor', 'lmiExempt', 'exemptCap'].includes(key)))
-      .map(([key, value]) => ({ label: INPUT_LABELS_ONE[key] || key, value: String(value) }));
+      .filter(([key, value]) => key !== 'firstHomeEligible' && String(value).trim() !== '')
+      .map(([key, value]) => ({ label: INPUT_LABELS_ONE[key] || key, value: key === 'purchaseType' && value === 'FHOG' ? 'First home buyer' : String(value) }));
     if (state.one.scenarioName?.trim()) entries.unshift({ label: 'Scenario name', value: state.one.scenarioName.trim() });
     return entries;
   };
@@ -1194,31 +1205,28 @@ function App() {
   };
 
   const renderHome = () => (
-    <div className="grid two-col">
-      <section className="panel hero-panel">
-        <div className="eyebrow">Version 3.4 styled PDF parity</div>
-        <h2>{state.meta.brandName || 'XYZ Finance Specialists'}</h2>
-        <p>
-          This revision keeps the current solver logic while making the PDF layout much closer to the Python desktop report:
-          header block, section bars, metric cards, decision guide, warnings panel, inputs used, all calculated results, and
-          a proper information box at the bottom.
-        </p>
-        <div className="hero-tags">
-          <span>Branded header</span>
-          <span>Metric cards</span>
-          <span>Warnings panel</span>
-          <span>Table layout parity</span>
+    <div className="home-layout">
+      <section className="home-hero">
+        <div className="home-hero-copy">
+          <div className="eyebrow">YOUR SCENARIO WORKSPACE</div>
+          <h2>Make the next move<br /><span>with more clarity.</span></h2>
+          <p>Explore the numbers, compare your options and build a clearer picture for every client.</p>
+          <button className="hero-action" onClick={() => setTab('one')}>Start a property scenario <span aria-hidden="true">↗</span></button>
         </div>
+        <div className="home-hero-aside" aria-hidden="true"><span>THE BIG PICTURE</span><strong>One decision.<br />More possibilities.</strong><div className="hero-orbit">↗</div></div>
       </section>
-      <section className="panel">
-        <h2>What changed</h2>
-        <ul className="feature-list">
-          <li>PDF now uses the Python-style section order and separator bars.</li>
-          <li>At a Glance exports as summary cards instead of plain rows.</li>
-          <li>Decision Guide and Warnings & Notes export in bordered insight panels.</li>
-          <li>Inputs Used and All Calculated Results export in table-style rows.</li>
-        </ul>
-      </section>
+      <div className="home-heading"><div><div className="eyebrow">YOUR TOOLS</div><h2>What are you working on?</h2></div><p>Choose a starting point. You can compare scenarios as you go.</p></div>
+      <div className="workflow-grid">
+        {([
+          ['one', '01', 'Buying a property', 'Estimate a purchase or explore your maximum price.'],
+          ['two', '02', 'Adding a property', 'Explore a second purchase alongside an existing property.'],
+          ['refi', '03', 'Refinancing', 'Compare a new loan with your current arrangements.'],
+          ['borrow', '04', 'Borrowing capacity', 'Get an indicative view of income and commitments.'],
+        ] as Array<[TabKey, string, string, string]>).map(([key, number, title, description]) => (
+          <button className="workflow-card" key={key} onClick={() => setTab(key)}><span className="workflow-number">{number}</span><span className="workflow-arrow" aria-hidden="true">↗</span><strong>{title}</strong><span>{description}</span></button>
+        ))}
+      </div>
+      <p className="home-footnote">Estimates are a starting point. Check eligibility, lender policy and current costs before making decisions.</p>
     </div>
   );
 
@@ -1230,37 +1238,50 @@ function App() {
     ];
     return (
       <div className="grid two-col">
-        <section className="panel">
-          <h2>1 Property</h2>
+        <section className="panel scenario-panel">
+          <div className="scenario-heading"><div><div className="eyebrow">PROPERTY SCENARIO</div><h2>Let's run the numbers.</h2><p>Start with your goal, then add the details you know.</p></div></div>
+          <fieldset className="mode-picker"><legend>What would you like to work out?</legend>
+            <label className={`mode-option ${!state.one.maxPurchaseMode ? 'selected' : ''}`}><input type="radio" name="purchase-mode" checked={!state.one.maxPurchaseMode} onChange={() => patchOne('maxPurchaseMode', false)} /><span><strong>Estimate a property</strong><small>I have a purchase price in mind</small></span></label>
+            <label className={`mode-option ${state.one.maxPurchaseMode ? 'selected' : ''}`}><input type="radio" name="purchase-mode" checked={state.one.maxPurchaseMode} onChange={() => patchOne('maxPurchaseMode', true)} /><span><strong>Find maximum price</strong><small>Work backwards from my limits</small></span></label>
+          </fieldset>
+          {state.one.maxPurchaseMode && <p className="helper-note">Enter your desired LVR and at least a cash budget or loan approval limit. For a more useful estimate, enter both.</p>}
+          <div className="section-heading"><span>01</span><div><h3>The property</h3><p>Tell us what you are buying.</p></div></div>
           <div className="field-grid">
-            {field('Scenario name', state.one.scenarioName, (v) => patchOne('scenarioName', v as string))}
-            {field('Purchase type', state.one.purchaseType, (v) => patchOne('purchaseType', v as PurchaseType | ''), 'select', ['PPR', 'FHOG', 'Investment'])}
+            {field('Scenario name (optional)', state.one.scenarioName, (v) => patchOne('scenarioName', v as string))}
+            <label className="field"><span>Purchase type</span><select value={state.one.purchaseType} onChange={(e) => setState((prev) => ({ ...prev, one: { ...prev.one, purchaseType: e.target.value as PurchaseType | '', firstHomeReliefOptOut: false, ntPackageEligible: false } }))}>
+              <option value="">Select...</option><option value="PPR">Owner occupier</option><option value="FHOG">First home buyer</option><option value="Investment">Investment</option>
+            </select></label>
+            {field('Property state / territory', state.one.state || 'VIC', (v) => setState((prev) => ({ ...prev, one: { ...prev.one, state: v as AustralianState, firstHomeReliefOptOut: false, ntPackageEligible: false, schemeArea: '' } })), 'select', AUSTRALIAN_STATES)}
+            {field('Property type', state.one.homeKind || 'Established', (v) => setState((prev) => ({ ...prev, one: { ...prev.one, homeKind: v as HomeKind, firstHomeReliefOptOut: false, ntPackageEligible: false } })), 'select', ['Established', 'New'])}
+            {!state.one.maxPurchaseMode && field('Purchase price ($)', state.one.housePrice, (v) => patchOne('housePrice', v as string), 'number')}
+          </div>
+          {state.one.purchaseType === 'FHOG' && <div className="relief-note"><strong>First-home duty relief is automatic</strong><p>We apply the selected state's rules where available, assuming the buyers qualify. Check the conditions for this purchase.</p><label><input type="checkbox" checked={!!state.one.firstHomeReliefOptOut} onChange={(e) => patchOne('firstHomeReliefOptOut', e.target.checked)} /> Buyers are not eligible — turn off first-home relief</label></div>}
+          <div className="section-heading"><span>02</span><div><h3>Loan and deposit</h3><p>Set the loan structure and available funds.</p></div></div>
+          <div className="field-grid">
+            {field('Desired LVR (%)', state.one.desiredLvr, (v) => patchOne('desiredLvr', v as string), 'number')}
+            <label className="lmi-option"><input type="checkbox" checked={state.one.lmiExempt} onChange={(e) => patchOne('lmiExempt', e.target.checked)} /><span><strong>LMI exemption / waiver</strong><small>First home scheme or professional waiver</small></span></label>
+            {state.one.lmiExempt && field('LMI waiver basis', state.one.lmiBasis || 'Lender / professional waiver', (v) => patchOne('lmiBasis', v as OnePropertyInputs['lmiBasis']), 'select', ['Lender / professional waiver', '5% Deposit Scheme'])}
+            {state.one.lmiExempt && state.one.lmiBasis !== '5% Deposit Scheme' && field('Maximum LVR for waiver (%)', state.one.exemptCap ?? '95', (v) => patchOne('exemptCap', v as string), 'number')}
+            {state.one.lmiExempt && state.one.lmiBasis === '5% Deposit Scheme' && field('Scheme price-cap area', state.one.schemeArea || '', (v) => patchOne('schemeArea', v as OnePropertyInputs['schemeArea']), 'select', ['Capital / eligible regional centre', 'Other areas'])}
+            {field('Available cash for deposit and costs ($)', state.one.maxCashContribution, (v) => patchOne('maxCashContribution', v as string), 'number')}
+            {field('Loan approval limit ($)', state.one.loanApprovalMax, (v) => patchOne('loanApprovalMax', v as string), 'number')}
             {field('Interest rate (%)', state.one.interestRate, (v) => patchOne('interestRate', v as string), 'number')}
             {field('Loan term (years)', state.one.loanTerm, (v) => patchOne('loanTerm', v as string), 'number')}
-            {field('House price (leave blank to auto-solve)', state.one.housePrice, (v) => patchOne('housePrice', v as string), 'number')}
-            {field('Desired LVR (%)', state.one.desiredLvr, (v) => patchOne('desiredLvr', v as string), 'number')}
-            {field('Loan approval max', state.one.loanApprovalMax, (v) => patchOne('loanApprovalMax', v as string), 'number')}
-            {field('Max cash contribution', state.one.maxCashContribution, (v) => patchOne('maxCashContribution', v as string), 'number')}
             {field('Repayment frequency', state.one.repaymentFrequency, (v) => patchOne('repaymentFrequency', v as Frequency | ''), 'select', ['Monthly', 'Fortnightly', 'Weekly'])}
-            {field('Extra principal yearly', state.one.extraPrincipal, (v) => patchOne('extraPrincipal', v as string), 'number')}
-            {field('Yearly income', state.one.yearlyIncome, (v) => patchOne('yearlyIncome', v as string), 'number')}
-            {field('Living expenses monthly', state.one.livingExpensesMonthly, (v) => patchOne('livingExpensesMonthly', v as string), 'number')}
-            {field('LMI exempt cap (%)', state.one.exemptCap, (v) => patchOne('exemptCap', v as string), 'number')}
+            {field('Extra principal per year ($)', state.one.extraPrincipal, (v) => patchOne('extraPrincipal', v as string), 'number')}
+          </div>
+          {state.one.lmiExempt && state.one.lmiBasis !== '5% Deposit Scheme' && <p className="helper-note" role="status">{oneCalc.invalidWaiverCap ? 'Enter a waiver maximum LVR between 0% and 100% to calculate this scenario.' : oneCalc.waiverLimitsLvr ? `Your desired LVR stays at ${oneCalc.outputs['Requested LVR']}; this scenario uses ${oneCalc.outputs['Applied / Capped LVR']} to stay within the waiver limit.` : 'The calculation stays within the waiver maximum. Turn off the waiver to explore a higher LVR with estimated LMI.'}</p>}
+          <div className="section-heading"><span>03</span><div><h3>Income and extras</h3><p>Optional details for a fuller picture.</p></div></div>
+          <div className="field-grid">
+            {field('Yearly income ($)', state.one.yearlyIncome, (v) => patchOne('yearlyIncome', v as string), 'number')}
+            {field('Monthly living expenses ($)', state.one.livingExpensesMonthly, (v) => patchOne('livingExpensesMonthly', v as string), 'number')}
           </div>
           <div className="checkbox-grid">
-            <label className="check-field">
-              <input type="checkbox" checked={state.one.maxPurchaseMode} onChange={(e) => patchOne('maxPurchaseMode', e.target.checked)} /> Maximum purchase mode
-            </label>
-            <label className="check-field">
-              <input type="checkbox" checked={state.one.useGuarantor} onChange={(e) => patchOne('useGuarantor', e.target.checked)} /> Use guarantor
-            </label>
-            <label className="check-field">
-              <input type="checkbox" checked={state.one.enableOopLimit} onChange={(e) => patchOne('enableOopLimit', e.target.checked)} /> Enable out-of-pocket limit
-            </label>
-            <label className="check-field">
-              <input type="checkbox" checked={state.one.lmiExempt} onChange={(e) => patchOne('lmiExempt', e.target.checked)} /> LMI exempt
-            </label>
+            <label className="check-field"><input type="checkbox" checked={state.one.useGuarantor} onChange={(e) => patchOne('useGuarantor', e.target.checked)} /> Use guarantor</label>
+            {!state.one.maxPurchaseMode && <label className="check-field"><input type="checkbox" checked={state.one.enableOopLimit} onChange={(e) => patchOne('enableOopLimit', e.target.checked)} /> Limit price to available cash</label>}
+            {state.one.state === 'NT' && state.one.purchaseType !== 'Investment' && state.one.homeKind === 'New' && <label className="check-field"><input type="checkbox" checked={!!state.one.ntPackageEligible} onChange={(e) => patchOne('ntPackageEligible', e.target.checked)} /> Apply eligible NT house-and-land package exemption</label>}
           </div>
+          <p className="muted scenario-note">Duty estimates use standard residential rules as at 2 November 2026. Check eligibility and dates; land, mixed eligibility, foreign surcharges and special concessions need separate assessment. Confirm any LMI waiver with the lender and check the scheme postcode and valuation.</p>
           <Actions
             onSaveTab={() => saveTab('one')}
             onLoadTab={() => loadTab('one')}
@@ -1282,13 +1303,13 @@ function App() {
             onCompare={(slot) => saveCompare(slot, '1 Property', compareRows)}
           />
         </section>
-        <section className="panel">
-          <h2>Results</h2>
+        <section className="panel results-panel">
+          <div className="eyebrow">YOUR ESTIMATE</div><h2>Results at a glance</h2>
           <Banner tone={oneCalc.deal.tone} lines={[oneCalc.deal.text, oneCalc.description]} />
           <Banner tone={oneCalc.warningTone} lines={oneCalc.warnings} />
-          <MetricSection title="At a Glance" items={oneCalc.atAGlance} />
+          {oneCalc.isComplete ? <><MetricSection title="At a Glance" items={oneCalc.atAGlance} />
           <DetailSection title="Decision Guide" rows={oneCalc.decisionGuide} />
-          <DetailSection title="All Calculated Results" rows={Object.entries(oneCalc.outputs).map(([label, value]) => ({ label, value }))} />
+          <details className="results-details"><summary>View all calculated results</summary><DetailSection title="All Calculated Results" rows={Object.entries(oneCalc.outputs).map(([label, value]) => ({ label, value }))} /></details></> : <p className="helper-note">{oneCalc.invalidWaiverCap ? 'Enter a valid maximum LVR for the waiver to see an estimate.' : 'Your estimate will appear here once you add a desired LVR and a property price or maximum-price limit.'}</p>}
         </section>
       </div>
     );
@@ -1311,6 +1332,7 @@ function App() {
             {field('Current mortgage', state.two.currentMortgage, (v) => patchTwo('currentMortgage', v as string), 'number')}
             {field('Current property value', state.two.currentValue, (v) => patchTwo('currentValue', v as string), 'number')}
             {field('Second house price', state.two.secondPrice, (v) => patchTwo('secondPrice', v as string), 'number')}
+            {field('New property state / territory', state.two.state || 'VIC', (v) => patchTwo('state', v as AustralianState), 'select', AUSTRALIAN_STATES)}
             {field('Desired consolidated LVR (%)', state.two.desiredLvr, (v) => patchTwo('desiredLvr', v as string), 'number')}
             {field('Current total monthly rent', state.two.currentRent, (v) => patchTwo('currentRent', v as string), 'number')}
             {field('New property monthly rent', state.two.newRent, (v) => patchTwo('newRent', v as string), 'number')}
@@ -1329,6 +1351,7 @@ function App() {
               <input type="checkbox" checked={state.two.lmiExempt} onChange={(e) => patchTwo('lmiExempt', e.target.checked)} /> LMI exempt
             </label>
           </div>
+          <p className="muted">Stamp duty uses the selected state. Other property costs, rates and land tax remain indicative Victorian assumptions.</p>
           <Actions
             onSaveTab={() => saveTab('two')}
             onLoadTab={() => loadTab('two')}
@@ -1533,7 +1556,7 @@ function App() {
         <div className="field-grid">
           {field('Brand name', state.meta.brandName, (v) => patchMeta('brandName', v as string))}
           <label className="field"><span>Signed-in broker</span><input type="text" value={state.meta.brokerName} readOnly /></label>
-          <label className="field"><span>Role</span><input type="text" value={currentProfile?.role || (currentUser ? 'worker' : 'guest')} readOnly /></label>
+          <label className="field"><span>Role</span><input type="text" value={currentProfile?.role || (currentUser ? 'broker' : 'guest')} readOnly /></label>
           <label className="field"><span>Storage mode</span><input type="text" value={storageMode === 'cloud' ? 'Cloud (Supabase)' : 'Local browser only'} readOnly /></label>
           <label className="field"><span>Account email</span><input type="text" value={currentUser?.email || 'Guest / not signed in'} readOnly /></label>
           {field('Local profile case name', profileNameDraft, (v) => setProfileNameDraft(v as string))}
@@ -1557,6 +1580,9 @@ function App() {
             Reset everything
           </button>
         </div>
+        {activeAccessLevel === 'view' && currentProfile?.role !== 'owner' && (
+          <p role="status">This case is view-only. Duplicate it to save your own copy.</p>
+        )}
         {state.meta.brokerName !== 'Guest' && (
           <div className="profile-list">
             <div className="profile-list-title">
@@ -1615,7 +1641,7 @@ function App() {
         <div>
           <div className="eyebrow">Mortgage workflow dashboard</div>
           <h1>{state.meta.brandName || 'XYZ Finance Specialists'}</h1>
-          <p>Live calculator with sign-in-ready cloud case storage, branded PDFs, and parity-focused summary blocks.</p>
+          <p>Explore lending scenarios, compare options and prepare client summaries.</p>
         </div>
         <div className="header-badge">{currentUser?.email ? `Signed in: ${currentUser.email}` : `Broker: ${state.meta.brokerName || '—'}`}</div>
       </header>
@@ -1692,6 +1718,7 @@ function App() {
               <>
                 <div className="eyebrow">Welcome, {state.meta.brokerName || 'Broker'}{currentProfile?.role ? ` (${currentProfile.role})` : ''}</div>
                 <h2>Choose how you’d like to continue</h2>
+                {authMessage && <p role="alert">{authMessage}</p>}
                 <div className="startup-menu">
                   <button onClick={createNewCase}>Create New Case</button>
                   <button className="secondary" onClick={() => {
@@ -1711,6 +1738,7 @@ function App() {
               <>
                 <div className="eyebrow">{storageMode === 'cloud' ? 'Cloud-saved cases' : 'Local saved profiles'}</div>
                 <h2>Load Saved Case</h2>
+                {authMessage && <p role="alert">{authMessage}</p>}
                 <label className="field startup-field">
                   <span>Search saved cases</span>
                   <input
@@ -1727,14 +1755,14 @@ function App() {
                         <button className="startup-profile-row" onClick={() => loadProfileById(profile.id)}>
                           <span>
                             <strong>{profile.caseName}</strong>
-                            <small>{new Date(profile.savedAt).toLocaleString()} • {profile.source === 'cloud' ? 'Cloud' : 'Local'}</small>
+                            <small>{new Date(profile.savedAt).toLocaleString()} • {profile.source === 'shared' ? 'Shared' : profile.source === 'cloud' ? 'Cloud' : 'Local'}{profile.accessLevel ? ` • ${profile.accessLevel}` : ''}</small>
                           </span>
                           <span>Load</span>
                         </button>
                         <div className="startup-profile-actions">
-                          <button className="secondary" onClick={() => void renameProfileById(profile.id)}>Rename</button>
+                          {(profile.source === 'local' || canEditCloudCase(profile)) && <button className="secondary" onClick={() => void renameProfileById(profile.id)}>Rename</button>}
                           <button className="secondary" onClick={() => void duplicateProfileById(profile.id)}>Duplicate</button>
-                          <button className="ghost danger" onClick={() => void deleteProfileById(profile.id)}>Delete</button>
+                          {(profile.source === 'local' || currentProfile?.role === 'owner' || profile.ownerId === currentUser?.id) && <button className="ghost danger" onClick={() => void deleteProfileById(profile.id)}>Delete</button>}
                         </div>
                       </div>
                     ))}
