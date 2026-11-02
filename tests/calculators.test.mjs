@@ -1,0 +1,51 @@
+import { buildSync } from 'esbuild';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { createRequire } from 'node:module';
+import assert from 'node:assert/strict';
+const temporary = mkdtempSync(join(tmpdir(), 'finance-test-'));
+try {
+  buildSync({entryPoints:['src/calculations.ts'],outfile:join(temporary,'calc.cjs'),bundle:true,platform:'node',format:'cjs'});
+  const {DEFAULTS,calcTwoProperties,calcRefinance,calcBorrowing,annualTax}=createRequire(import.meta.url)(join(temporary,'calc.cjs'));
+  assert.equal(annualTax(45000),4020,'2026–27 tax first threshold');
+  assert.equal(annualTax(135000),31020,'2026–27 tax middle threshold');
+  const two={...DEFAULTS.twoProperties,currentValue:'800000',currentMortgage:'400000',secondPrice:'700000',state:'VIC',desiredLvr:'80',loanTerm:'30',interestRate:'6',approvalMax:'500000'};
+  const p=calcTwoProperties(two);
+  assert.equal(p.outputs['Actual combined base loan'],'$900,000','actual debt reflects approval, not target');
+  assert.equal(p.outputs['Actual combined loan including LMI'],'$900,000','LMI based on actual debt');
+  assert.equal(p.outputs['Annual property costs entered'],'Not entered','do not guess land tax and running costs');
+  assert.equal(p.outputs['Tax impact'],'Not calculated','no unsupported deductions');
+  assert.equal(calcTwoProperties({...two,secondPrice:'850000',state:'QLD',secondPurpose:'PPR'}).outputs['Estimated purchase duty'],'$24,100','owner-occupier duty uses the selected purpose');
+  assert.equal(calcTwoProperties({...two,secondPrice:'850000',state:'QLD',secondPurpose:'Investment'}).outputs['Estimated purchase duty'],'$31,275','investment purchase uses investment duty');
+  const draw=calcTwoProperties({...two,currentMortgage:'700000',withdraw80:true});
+  assert.equal(draw.outputs['Equity released'],'$0','do not reduce an existing loan already above 80%');
+  assert.equal(draw.outputs['Mortgage after equity release'],'$700,000');
+  assert.equal(calcTwoProperties({...two,desiredLvr:''}).isComplete,false,'missing LVR does not produce an estimate');
+  assert.equal(calcTwoProperties({...two,lmiExempt:true,exemptCap:''}).isComplete,false,'waiver cap must be entered');
+  const refi={...DEFAULTS.refinance,currentValue:'800000',currentLoan:'600000',currentRate:'0',currentTerm:'30',currentFreq:'Monthly',newRate:'0',newTerm:'30',newFreq:'Weekly',cashback:'1000'};
+  const r=calcRefinance(refi);
+  assert.equal(r.outputs['Interest and upfront cost difference (1 year)'],'+$1,000','cashback retained and different frequencies compare one year');
+  assert.equal(r.outputs['Interest and upfront cost difference (5 years)'],'+$1,000','zero interest over five years');
+  const interest = (principal, rate, periodsPerYear, years) => {
+    const r=rate/100/periodsPerYear, n=30*periodsPerYear, payment=principal*r/(1-(1+r)**(-n));
+    let balance=principal, sum=0;
+    for(let i=0;i<years*periodsPerYear;i++){const amount=balance*r;sum+=amount;balance-=payment-amount;}
+    return sum;
+  };
+  const mixed=calcRefinance({...refi,currentRate:'6',newRate:'5',cashback:'0'});
+  const expected=Math.round(interest(600000,6,12,5)-interest(600000,5,52,5));
+  assert.equal(Number(mixed.outputs['Interest and upfront cost difference (5 years)'].replace(/[^0-9.-]/g,'')),expected,'five-year interest is measured over 60 monthly and 260 weekly payments');
+  const extended=calcRefinance({...refi,currentRate:'6',currentTerm:'20',newRate:'5.5',newTerm:'30',cashback:'0'});
+  assert.ok(extended.outputs['Lifetime interest and upfront cost difference'].startsWith('-'),'longer refinance term can cost more despite lower rate');
+  assert.equal(calcRefinance({...refi,extraBorrow:'10000'}).outputs['Lifetime interest and upfront cost difference'],'Not comparable','extra borrowing cannot be represented as refinance savings');
+  assert.equal(calcRefinance({...refi,currentValue:''}).isComplete,false,'missing property value prevents results');
+  const borrow={...DEFAULTS.borrowing,grossIncome1:'150000',livingExpensesMonthly:'4000',actualRate:'6',loanTerm:'30',targetLvr:'80'};
+  const base=calcBorrowing(borrow), withHelp=calcBorrowing({...borrow,helpRepaymentsMonthly:'500'});
+  const number=x=>Number(x.replace(/[^0-9.-]/g,''));
+  assert.ok(number(withHelp.outputs['Borrowing capacity']) < number(base.outputs['Borrowing capacity']),'HELP repayments reduce capacity');
+  assert.ok(base.warnings.some(x=>x.includes('not a lender calculator')),'model is presented as illustrative');
+  assert.equal(calcBorrowing({...borrow,targetLvr:'110'}).isComplete,false,'invalid LVR rejected');
+  assert.equal(calcBorrowing({...borrow,actualRate:''}).isComplete,false,'rate must be provided');
+  console.log('Property, refinance and borrowing checks passed.');
+} finally {rmSync(temporary,{recursive:true,force:true});}

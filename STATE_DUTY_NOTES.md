@@ -4,7 +4,7 @@ The model estimates ordinary residential home purchases, assuming full acquisiti
 
 The 5% Deposit Scheme check uses the selected state and area price cap and assumes other eligibility, location and valuation are verified with a participating lender. Area cannot be inferred from state alone. The professional/lender LMI waiver is an explicit assumption. LMI without a waiver is only an indicative approximation.
 
-For the two-property scenario, only purchase duty uses the chosen state; the existing land-tax and running-cost estimates retain Victorian assumptions. Verify land tax separately, especially because it uses land value, not purchase price.
+For the two-property scenario, purchase duty uses the selected state and owner-occupier or investment purpose. Running costs, including land tax, must be entered manually; the calculator does not infer them from property prices. First-home concessions are not modelled in the two-property tab.
 
 Sources:
 - VIC: https://www.sro.vic.gov.au/about-us/rates-and-statistics/current-rates/land-transfer-duty-non-principal-place-residence-current-rates and https://sro.vic.gov.au/about-us/rates-and-statistics/current-rates/land-transfer-duty-principal-place-residence-current-rates and https://www.sro.vic.gov.au/buying-property/land-transfer-stamp-duty/concessions-exemptions-and-waivers/first-home-buyers/first-home-buyer-duty-exemption-or-concession

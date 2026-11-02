@@ -68,7 +68,7 @@ try {
   assert.equal(calc({maxPurchaseMode:true,loanApprovalMax:'665000',maxCashContribution:''})['Maximum Purchase Price'],'$700,000','maximum from approval and LVR');
   const legacy={...base}; delete legacy.state; delete legacy.homeKind; delete legacy.firstHomeEligible;
   assert.equal(calcOneProperty(legacy).outputs['State / territory'],'VIC','legacy saved cases default to Victoria');
-  const second=calcTwoProperties({...DEFAULTS.twoProperties,state:'NSW',currentValue:'800000',currentMortgage:'400000',secondPrice:'700000',desiredLvr:'80',loanTerm:'30'});
+  const second=calcTwoProperties({...DEFAULTS.twoProperties,state:'NSW',currentValue:'800000',currentMortgage:'400000',secondPrice:'700000',desiredLvr:'80',loanTerm:'30',interestRate:'5.9'});
   assert.equal(second.outputs['New property state / territory'],'NSW');
   console.log('Duty, scheme caps, LMI and saved-case checks passed.');
 } finally { rmSync(temporary,{recursive:true,force:true}); }
