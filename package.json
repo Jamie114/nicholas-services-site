@@ -8,19 +8,22 @@
     "build": "tsc -b && vite build",
     "preview": "vite preview",
     "predeploy": "npm run build",
-    "deploy": "gh-pages -d dist --cname www.nicholasservices.com.au"
+    "deploy": "gh-pages -d dist --cname www.nicholasservices.com.au",
+    "test:duty": "node tests/duty.test.mjs"
   },
   "dependencies": {
+    "@supabase/supabase-js": "^2.57.4",
     "jspdf": "^2.5.2",
+    "lucide-react": "^1.7.0",
     "react": "^18.3.1",
-    "react-dom": "^18.3.1",
-    "@supabase/supabase-js": "^2.57.4"
+    "react-dom": "^18.3.1"
   },
   "devDependencies": {
+    "@types/node": "^26.6.6",
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
     "@vitejs/plugin-react": "^4.3.1",
-    "gh-pages": "^6.1.1",
+    "gh-pages": "^6.3.0",
     "typescript": "^5.6.2",
     "vite": "^5.4.8"
   }
