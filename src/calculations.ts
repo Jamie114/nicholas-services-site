@@ -53,6 +53,7 @@ export const DEFAULTS = {
     currentMortgage: '',
     currentValue: '',
     secondPrice: '',
+    secondPurpose: 'Investment' as 'Investment' | 'PPR',
     crossCollat: true,
     desiredLvr: '',
     withdraw80: false,
@@ -62,6 +63,7 @@ export const DEFAULTS = {
     lmiExempt: false,
     exemptCap: '',
     yearlyIncome: '',
+    annualPropertyCosts: '',
   },
   refinance: {
     scenarioName: '',
@@ -96,6 +98,7 @@ export const DEFAULTS = {
     existingLoanRepaymentsMonthly: '',
     creditCardLimits: '',
     otherDebtsMonthly: '',
+    helpRepaymentsMonthly: '',
     actualRate: '',
     assessmentBufferPct: '',
     assessmentFloorRatePct: '',
@@ -118,10 +121,10 @@ const LMI_BANDS: Array<[number, number]> = [
 
 const TAX_BANDS: Array<[number, number, number]> = [
   [0, 0, 0.0],
-  [18200, 0, 0.16],
-  [45000, 4288, 0.3],
-  [135000, 31288, 0.37],
-  [190000, 51638, 0.45],
+  [18200, 0, 0.15],
+  [45000, 4020, 0.3],
+  [135000, 31020, 0.37],
+  [190000, 51370, 0.45],
 ];
 
 const LAND_TAX_BANDS: Array<[number, number, number]> = [
@@ -650,187 +653,70 @@ export const calcOneProperty = (inputs: OnePropertyInputs) => {
 
 
 export const calcTwoProperties = (inputs: TwoPropertyInputs) => {
-  const rate = parseNumber(inputs.interestRate, 5.9);
-  const years = parseNumber(inputs.loanTerm, 30);
-  const currentMortgage = parseNumber(inputs.currentMortgage);
-  const currentValue = parseNumber(inputs.currentValue);
-  const secondPrice = parseNumber(inputs.secondPrice);
-  const crossCollat = !!inputs.crossCollat;
-  const desiredLvr = parseNumber(inputs.desiredLvr) / 100;
-  const withdraw80 = !!inputs.withdraw80;
-  const currentRent = parseNumber(inputs.currentRent);
-  const newRent = parseNumber(inputs.newRent);
-  const approvalMax = parseNumber(inputs.approvalMax);
-  const lmiExempt = !!inputs.lmiExempt;
-  const exemptCap = parseNumber(inputs.exemptCap, 90) / 100;
-  const yearlyIncome = parseNumber(inputs.yearlyIncome);
-  const transferFees = 2000;
+  const rate = parseNumber(inputs.interestRate, 5.9), years = parseNumber(inputs.loanTerm, 30);
+  const currentMortgage = parseNumber(inputs.currentMortgage), currentValue = parseNumber(inputs.currentValue);
+  const secondPrice = parseNumber(inputs.secondPrice), desiredLvr = parseNumber(inputs.desiredLvr) / 100;
+  const currentRent = parseNumber(inputs.currentRent), newRent = parseNumber(inputs.newRent);
+  const approvalMax = parseNumber(inputs.approvalMax), yearlyIncome = parseNumber(inputs.yearlyIncome);
+  const crossCollat = !!inputs.crossCollat, withdraw80 = !!inputs.withdraw80;
+  const exemptCap = parseNumber(inputs.exemptCap, NaN) / 100;
+  const costsEntered = String(inputs.annualPropertyCosts ?? '').trim() !== '';
+  const annualCosts = parseNumber(inputs.annualPropertyCosts ?? '');
+  const invalid: string[] = [];
+  if (currentValue <= 0 || secondPrice <= 0) invalid.push('Enter both property values above zero.');
+  if (currentMortgage < 0 || approvalMax < 0 || currentRent < 0 || newRent < 0 || annualCosts < 0) invalid.push('Amounts cannot be negative.');
+  if (desiredLvr <= 0 || desiredLvr >= 1) invalid.push('Enter a target combined LVR above 0% and below 100%.');
+  if (!String(inputs.interestRate ?? '').trim() || !String(inputs.loanTerm ?? '').trim() || years <= 0 || rate < 0) invalid.push('Enter a positive loan term and a non-negative interest rate.');
+  if (inputs.lmiExempt && (!(exemptCap > 0) || exemptCap > 1)) invalid.push('Enter a waiver maximum LVR between 0% and 100%.');
+  if (invalid.length) return { isComplete: false, tone: 'info' as AlertTone, deal: {text:'Add valid inputs',tone:'info' as AlertTone}, warnings:invalid, warningTone:'info' as AlertTone, outputs: {'Scenario status':'Enter valid values to calculate.'}, atAGlance:[], decisionGuide:[] };
 
-  const invalidWarnings: string[] = [];
-  if (desiredLvr >= 1) invalidWarnings.push('Desired consolidated LVR must be below 100%.');
-  if (currentValue <= 0) invalidWarnings.push('Current property value needs to be greater than zero.');
-  if (secondPrice <= 0) invalidWarnings.push('Second property price needs to be greater than zero.');
-  if (years <= 0) invalidWarnings.push('Loan term needs to be greater than zero years.');
-
-  if (invalidWarnings.length) {
-    return {
-      tone: 'bad' as AlertTone,
-      deal: { text: 'Scenario needs valid inputs', tone: 'bad' as AlertTone },
-      warnings: invalidWarnings,
-      warningTone: 'bad' as AlertTone,
-      outputs: {
-        'Scenario status': 'Enter valid values to calculate the 2-property scenario.',
-      },
-      atAGlance: [
-        { label: 'Scenario', value: 'Invalid inputs', tone: 'bad' as AlertTone },
-        { label: 'Desired LVR', value: desiredLvr > 0 ? formatPercent(desiredLvr) : '-', tone: 'bad' as AlertTone },
-      ],
-      decisionGuide: [
-        { label: 'Best next move', value: invalidWarnings[0] },
-      ],
-    };
-  }
-
-  const equity = currentValue - currentMortgage;
-  const currentLvr = currentValue > 0 ? currentMortgage / currentValue : 0;
-  const mortgageAfterDraw = withdraw80 ? 0.8 * currentValue : currentMortgage;
-  const equityWithdrawn = withdraw80 ? mortgageAfterDraw - currentMortgage : 0;
-
+  const equity = currentValue - currentMortgage, currentLvr = currentMortgage / currentValue;
+  const mortgageAfterDraw = withdraw80 ? Math.max(currentMortgage, 0.8 * currentValue) : currentMortgage;
+  const equityWithdrawn = mortgageAfterDraw - currentMortgage;
   const secondState: AustralianState = AUSTRALIAN_STATES.includes(inputs.state) ? inputs.state : 'VIC';
-  const stamp = stampDuty(secondPrice, 'Investment', secondState);
-  const totalAssets = currentValue + secondPrice;
-  const totalConsolidatedLoan = desiredLvr * totalAssets;
-  const newLoanRequired = Math.max(0, totalConsolidatedLoan - mortgageAfterDraw);
+  const secondPurpose = inputs.secondPurpose === 'PPR' ? 'PPR' : 'Investment';
+  const stamp = stampDuty(secondPrice, secondPurpose, secondState), transferFees = 2000;
+  const totalAssets = currentValue + secondPrice, targetLoan = desiredLvr * totalAssets;
+  const purchaseFundsNeeded = Math.max(0, secondPrice + stamp + transferFees - equityWithdrawn);
+  const newLoanRequired = Math.min(Math.max(0, targetLoan - mortgageAfterDraw), purchaseFundsNeeded);
   const actualNewLoan = approvalMax > 0 ? Math.min(newLoanRequired, approvalMax) : newLoanRequired;
-  const newAssetLvr = secondPrice > 0 ? actualNewLoan / secondPrice : 0;
-
-  const lmiBaseLoan = crossCollat ? totalConsolidatedLoan : actualNewLoan;
+  const actualBaseLoan = mortgageAfterDraw + actualNewLoan;
+  const lmiBaseLoan = crossCollat ? actualBaseLoan : actualNewLoan;
   const lmiBaseValue = crossCollat ? totalAssets : secondPrice;
-  const lmi = lmiCost(lmiBaseValue, lmiBaseLoan, lmiExempt, exemptCap || 0.9);
-  const loanPlusLmi = totalConsolidatedLoan + lmi;
-  const oop = Math.max(0, (secondPrice + stamp + transferFees) - (actualNewLoan + Math.max(0, equityWithdrawn)));
-  const extraCash = approvalMax > 0 ? Math.max(0, newLoanRequired - approvalMax) : 0;
-
+  const lmi = lmiCost(lmiBaseValue, lmiBaseLoan, !!inputs.lmiExempt, exemptCap);
+  const loanPlusLmi = actualBaseLoan + lmi, totalLvr = loanPlusLmi / totalAssets;
+  const oop = Math.max(0, purchaseFundsNeeded - actualNewLoan);
+  const extraCash = Math.max(0, newLoanRequired - actualNewLoan);
   const monthlyPiCurrent = periodicPayment(mortgageAfterDraw, rate, years, 'Monthly');
   const monthlyPiNew = periodicPayment(actualNewLoan + lmi, rate, years, 'Monthly');
   const totalMonthlyPi = monthlyPiCurrent + monthlyPiNew;
-  const monthlyOffset = totalMonthlyPi - (currentRent + newRent);
-
-  const yearlyRates = 272 + 210 + 190 + 416 + ((currentValue - 100000) * 0.000173) + ((secondPrice - 100000) * 0.000173) + (((currentValue - 100000) * 0.05) * 0.05) + ((((secondPrice - 100000) * 0.05) * 0.05));
-  const yearlyPm = ((currentRent + newRent) * 0.055) * 12;
-  const yearlyLandTax = annualLandTax(currentValue + secondPrice);
-  const yearlyInsurance = 750 * 2;
-  const waterService = (21.26 + 122.58 + 31.51 + 22.63) * 2 * 4;
-  const yearlyOutgoings = yearlyRates + yearlyPm + yearlyLandTax + yearlyInsurance + waterService;
-  const monthlyOutgoings = yearlyOutgoings / 12;
-  const monthlyWithOutgoings = monthlyOffset + monthlyOutgoings;
-
-  const totalYearlyExpenses = ((currentRent * 12) + (newRent * 12)) - ((totalMonthlyPi * 12) + yearlyOutgoings);
-  const negativeGearing = ((currentRent * 12) + (newRent * 12)) - (((interestComponent(mortgageAfterDraw, rate, 'Monthly') + interestComponent(actualNewLoan + lmi, rate, 'Monthly')) * 12) + yearlyOutgoings);
-
-  const taxPayableBase = annualTax(yearlyIncome) + (0.02 * yearlyIncome);
-  const incomeWithNeg = yearlyIncome + negativeGearing;
-  const taxPayableNeg = annualTax(incomeWithNeg) + (0.02 * incomeWithNeg);
-  const taxBack = taxPayableBase - taxPayableNeg;
-
-  const totalLvr = totalAssets > 0 ? loanPlusLmi / totalAssets : 0;
-  const serviceRatio = yearlyIncome > 0 ? totalMonthlyPi / Math.max(1, yearlyIncome / 12) : 0;
-
-  const warnings: string[] = [];
-  let warningTone: AlertTone = 'good';
-  warnings.push('Property running costs and land tax use indicative Victorian assumptions; they are not state-specific.');
-  if (desiredLvr > 0.95) {
-    warnings.push('Desired consolidated LVR is above 95%. This is a high-leverage scenario.');
-    warningTone = 'bad';
-  } else if (desiredLvr > 0.90) {
-    warnings.push('Desired consolidated LVR is above 90%. Review buffers, valuation risk, and LMI impacts carefully.');
-    warningTone = 'warn';
-  }
-  if (extraCash > 0) {
-    warnings.push('Approval limit is below the loan required for the requested scenario, so extra cash is needed.');
-    if (warningTone === 'good') warningTone = 'warn';
-  }
-  if (serviceRatio > 0.35) {
-    warnings.push('Estimated total monthly repayments are above 35% of the entered annual income.');
-    if (warningTone === 'good') warningTone = 'warn';
-  }
-  if (monthlyWithOutgoings > 0) {
-    warnings.push('After rent and estimated outgoings, this scenario is still cash-flow negative each month.');
-    if (warningTone === 'good') warningTone = 'warn';
-  }
-  if (withdraw80) warnings.push('Withdraw to 80% mode is on, so the current property has been re-geared up to 80% LVR for this scenario.');
-  if (!warnings.length) warnings.push('Scenario looks internally consistent using the current assumptions.');
-
-  const dealTone: AlertTone = totalLvr <= 0.8 && monthlyWithOutgoings <= 0 ? 'good' : totalLvr <= 0.9 ? 'warn' : 'bad';
-  const dealText = totalLvr <= 0.80 && monthlyWithOutgoings <= 0
-    ? 'Strong Position'
-    : totalLvr <= 0.90
-      ? 'Moderate Stretch'
-      : 'High Risk Structure';
-
-  const whyResult = extraCash > 0
-    ? 'Approval limit is capping the structure.'
-    : monthlyWithOutgoings > 0
-      ? 'Cash flow stays negative after rent and estimated outgoings.'
-      : totalLvr > 0.9
-        ? 'Consolidated leverage remains elevated.'
-        : withdraw80
-          ? 'The deal works partly because equity is being redrawn up to 80% on the current property.'
-          : 'LVR and cash flow are comparatively more balanced on the current assumptions.';
-
-  const bestNextMove = extraCash > 0
-    ? 'Increase available lending, lower the second purchase price, or contribute more equity/cash.'
-    : monthlyWithOutgoings > 0
-      ? 'Stress test the rent, rate, and outgoings before proceeding with this structure.'
-      : totalLvr > 0.9
-        ? 'Consider lowering the target LVR or second purchase price to improve lender fit and reduce LMI pressure.'
-        : 'Compare this against a slightly lower second purchase price so you can see how much extra buffer it creates.';
-
-  return {
-    tone: dealTone,
-    deal: { text: dealText, tone: dealTone },
-    warnings,
-    warningTone,
+  const beforeCosts = currentRent + newRent - totalMonthlyPi;
+  const afterCosts = beforeCosts - annualCosts / 12;
+  const warnings = ['Indicative purchase duty assumes the selected use and standard eligibility; verify transaction details. Transfer fees assumed $2,000.', 'Both loans are modelled at the same rate and term. Actual facilities may differ.', 'LMI is an approximation; confirm lender quote, loan structure and waiver eligibility.', 'Tax effects are not calculated: deductibility depends on how borrowed funds are used.'];
+  if (approvalMax <= 0) warnings.push('No new-loan approval limit was entered; borrowing capacity has not limited this estimate.');
+  if (!String(inputs.currentRent ?? '').trim() || !String(inputs.newRent ?? '').trim()) warnings.push('Any blank rent field is treated as zero.');
+  if (inputs.lmiExempt && lmiBaseValue > 0 && lmiBaseLoan / lmiBaseValue > exemptCap + 1e-10) warnings.push('The modelled LVR exceeds the waiver limit, so the waiver was not applied and LMI is estimated.');
+  if (!costsEntered) warnings.push('Enter annual property costs to see cash flow after expenses; land tax, insurance, rates and other costs are not estimated automatically.');
+  if (equityWithdrawn > secondPrice + stamp + transferFees) warnings.push('Equity release exceeds purchase costs; the excess remains borrowed and is not counted as a purchase expense.');
+  if (withdraw80 && currentMortgage >= 0.8 * currentValue) warnings.push('No equity is released: the existing mortgage is already at or above 80% of the property value.');
+  if (extraCash > 0) warnings.push('The new-loan approval limit reduces borrowing; extra cash is required.');
+  if (currentMortgage > targetLoan) warnings.push('Existing debt already exceeds the target combined LVR; this model does not pay down the existing loan.');
+  if (!crossCollat && actualNewLoan / secondPrice > 1) warnings.push('New loan exceeds the purchase price; confirm the lender can support this structure and security.');
+  const tone: AlertTone = totalLvr > .9 || extraCash > 0 ? 'warn' : 'info';
+  const dealText = 'Indicative purchase structure';
+  return { isComplete:true, tone, deal:{text:dealText,tone}, warnings, warningTone:'info' as AlertTone,
     outputs: {
-      'Current Equity': formatMoney(equity),
-      'Current LVR': formatPercent(currentLvr),
-      'Mortgage After Equity Draw': formatMoney(mortgageAfterDraw),
-      'Equity Withdrawn': formatMoney(equityWithdrawn),
-      'New Loan Required': formatMoney(newLoanRequired),
-      'Actual New Loan': formatMoney(actualNewLoan),
-      'Loan-to-Value Ratio (new asset)': formatPercent(newAssetLvr),
-      'Total Assets': formatMoney(totalAssets),
-      'Total Consolidated Loan Amount': formatMoney(totalConsolidatedLoan),
-      'LMI Costs': formatMoney(lmi),
-      'New property state / territory': secondState,
-      'Total Loan Amount + LMI': formatMoney(loanPlusLmi),
-      'Extra Cash Required': formatMoney(extraCash),
-      'Total Out-of-Pocket Expenses': formatMoney(oop),
-      'Total Monthly P&I Repayments': formatMoney(totalMonthlyPi),
-      'Total Monthly Repayments with Offset': formatMoney(monthlyOffset),
-      'Total Monthly Repayments with Outgoings': formatMoney(monthlyWithOutgoings),
-      'Total Yearly Expenses': formatMoney(totalYearlyExpenses),
-      'Positive/Negative Gearing': formatMoney(negativeGearing),
-      'Tax Back from Negative Gearing': formatMoney(taxBack),
-      'Fortnightly Take Home Adjustment': formatMoney(taxBack / 26),
-      'Monthly Take Home Adjustment': formatMoney(taxBack / 12),
-      'Cross-collateralised for LMI': crossCollat ? 'Yes' : 'No',
-      'Withdraw equity to 80%': withdraw80 ? 'Yes' : 'No',
+      'Current equity':formatSignedMoney(equity), 'Current LVR':formatPercent(currentLvr), 'Mortgage after equity release':formatMoney(mortgageAfterDraw), 'Equity released':formatMoney(equityWithdrawn),
+      'New property state / territory':secondState, 'New property use':secondPurpose === 'PPR' ? 'Owner occupier' : 'Investment', 'Estimated purchase duty':formatMoney(stamp), 'Transfer fees assumption':formatMoney(transferFees),
+      'Target combined loan':formatMoney(targetLoan), 'New loan needed at target':formatMoney(newLoanRequired), 'Actual new loan':formatMoney(actualNewLoan),
+      'Extra cash due to approval limit':formatMoney(extraCash), 'Total out-of-pocket expenses':formatMoney(oop), 'Actual combined base loan':formatMoney(actualBaseLoan),
+      'Estimated LMI':formatMoney(lmi), 'Actual combined loan including LMI':formatMoney(loanPlusLmi), 'Combined LVR including LMI':formatPercent(totalLvr),
+      'Monthly P&I repayments':formatMoney(totalMonthlyPi), 'Monthly cash flow before property costs':formatSignedMoney(beforeCosts),
+      'Annual property costs entered':costsEntered?formatMoney(annualCosts):'Not entered', 'Monthly cash flow after entered property costs':costsEntered?formatSignedMoney(afterCosts):'Enter property costs',
+      'Tax impact':'Not calculated', 'Cross-collateralised LMI estimate':crossCollat?'Yes':'No',
     },
-    atAGlance: [
-      { label: 'Out of pocket', value: formatMoney(oop), tone: oop > 0 ? 'info' as AlertTone : 'good' as AlertTone },
-      { label: 'Consolidated LVR', value: formatPercent(totalLvr), tone: toneFromLvr(totalLvr) },
-      { label: 'Total loan + LMI', value: formatMoney(loanPlusLmi), tone: 'info' as AlertTone },
-      { label: 'Monthly P&I', value: formatMoney(totalMonthlyPi), tone: serviceRatio > 0.35 ? 'warn' as AlertTone : 'good' as AlertTone },
-      { label: 'Monthly after rent', value: formatSignedMoney(-monthlyOffset), tone: monthlyOffset > 0 ? 'warn' as AlertTone : 'good' as AlertTone },
-      { label: 'Structure', value: dealText, tone: dealTone },
-    ],
-    decisionGuide: [
-      { label: 'Why this result', value: whyResult },
-      { label: 'Best next move', value: bestNextMove },
-      { label: 'Equity release', value: formatMoney(Math.max(0, equityWithdrawn)) },
-      { label: 'Tax adjustment', value: formatMoney(taxBack / 12) + ' per month' },
-    ],
+    atAGlance:[{label:'Cash required',value:formatMoney(oop),tone:'info' as AlertTone},{label:'Combined LVR incl. LMI',value:formatPercent(totalLvr),tone},{label:'Actual combined debt',value:formatMoney(loanPlusLmi),tone:'info' as AlertTone},{label:'Monthly P&I',value:formatMoney(totalMonthlyPi),tone:'info' as AlertTone},{label:'Monthly cash flow after costs',value:costsEntered?formatSignedMoney(afterCosts):'Enter property costs',tone:'info' as AlertTone},{label:'Equity released',value:formatMoney(equityWithdrawn),tone:'info' as AlertTone}],
+    decisionGuide:[{label:'Approval gap',value:formatMoney(extraCash)},{label:'Target versus actual combined LVR',value:`${formatPercent(desiredLvr)} target / ${formatPercent(totalLvr)} including LMI`},{label:'Tax',value:'Not calculated; seek advice on loan purposes and deductible expenses.'},{label:'Income context',value:yearlyIncome>0?`Gross annual income entered: ${formatMoney(yearlyIncome)}`:'Income not entered; servicing has not been assessed.'}]
   };
 };
 
@@ -851,6 +737,12 @@ export const calcRefinance = (inputs: RefinanceInputs) => {
   const cashback = parseNumber(inputs.cashback);
   const extraBorrow = parseNumber(inputs.extraBorrow);
   const lmiExempt = inputs.lmiExempt;
+  const errors: string[] = [];
+  if (currentValue <= 0 || currentLoan <= 0) errors.push('Enter the property value and current loan balance.');
+  if (currentTerm <= 0 || newTerm <= 0 || !String(inputs.currentTerm ?? '').trim() || !String(inputs.newTerm ?? '').trim()) errors.push('Enter the remaining current term and new term.');
+  if (!String(inputs.currentRate ?? '').trim() || !String(inputs.newRate ?? '').trim() || currentRate < 0 || newRate < 0) errors.push('Enter non-negative current and new rates.');
+  if ([discharge,application,legal,valuation,gov,cashback,extraBorrow].some(x=>x<0)) errors.push('Fees, cashback and extra borrowing cannot be negative.');
+  if (errors.length) return { isComplete:false, tone:'info' as AlertTone, deal:{text:'Add valid inputs',tone:'info' as AlertTone}, warnings:errors, warningTone:'info' as AlertTone, outputs:{'Scenario status':'Enter valid values to calculate.'}, atAGlance:[], decisionGuide:[] };
   const currentEquity = currentValue - currentLoan;
   const currentLvr = currentValue > 0 ? currentLoan / currentValue : 0;
   const baseNewLoan = currentLoan + extraBorrow;
@@ -865,26 +757,28 @@ export const calcRefinance = (inputs: RefinanceInputs) => {
   const breakeven = netCost <= 0 ? 'Immediate' : annualDiff <= 0 ? 'No break-even' : `${((netCost / annualDiff) * 12).toFixed(1)} months`;
   const interestCurrent = totalInterest(currentLoan, currentRate, currentTerm, currentFreq);
   const interestNew = totalInterest(newLoanTotal, newRate, newTerm, newFreq);
-  const interestSaved = interestCurrent - interestNew - netCost;
-  const periods1 = Math.min(periodsPerYear(currentFreq), currentTerm * periodsPerYear(currentFreq), newTerm * periodsPerYear(newFreq));
-  const periods3 = Math.min(periodsPerYear(currentFreq) * 3, currentTerm * periodsPerYear(currentFreq), newTerm * periodsPerYear(newFreq));
-  const periods5 = Math.min(periodsPerYear(currentFreq) * 5, currentTerm * periodsPerYear(currentFreq), newTerm * periodsPerYear(newFreq));
-  const benefit1 = amortizationInterestOverPeriod(currentLoan, currentRate, currentTerm, currentFreq, periods1) - (amortizationInterestOverPeriod(newLoanTotal, newRate, newTerm, newFreq, periods1) + Math.max(0, netCost));
-  const benefit3 = amortizationInterestOverPeriod(currentLoan, currentRate, currentTerm, currentFreq, periods3) - (amortizationInterestOverPeriod(newLoanTotal, newRate, newTerm, newFreq, periods3) + Math.max(0, netCost));
-  const benefit5 = amortizationInterestOverPeriod(currentLoan, currentRate, currentTerm, currentFreq, periods5) - (amortizationInterestOverPeriod(newLoanTotal, newRate, newTerm, newFreq, periods5) + Math.max(0, netCost));
+  const interestSaved = interestCurrent - interestNew - netCost - lmi;
+  const periods1 = 1, periods3 = 3, periods5 = 5;
+  const benefit1 = amortizationInterestOverPeriod(currentLoan, currentRate, currentTerm, currentFreq, periods1 * periodsPerYear(currentFreq)) - (amortizationInterestOverPeriod(newLoanTotal, newRate, newTerm, newFreq, periods1 * periodsPerYear(newFreq)) + netCost + lmi);
+  const benefit3 = amortizationInterestOverPeriod(currentLoan, currentRate, currentTerm, currentFreq, periods3 * periodsPerYear(currentFreq)) - (amortizationInterestOverPeriod(newLoanTotal, newRate, newTerm, newFreq, periods3 * periodsPerYear(newFreq)) + netCost + lmi);
+  const benefit5 = amortizationInterestOverPeriod(currentLoan, currentRate, currentTerm, currentFreq, periods5 * periodsPerYear(currentFreq)) - (amortizationInterestOverPeriod(newLoanTotal, newRate, newTerm, newFreq, periods5 * periodsPerYear(newFreq)) + netCost + lmi);
   let warningTone: AlertTone = 'good';
   const warnings: string[] = [];
   if (newLvr > 0.95) { warnings.push('Refinance LVR is above 95%. This is a very high-leverage scenario.'); warningTone = 'bad'; }
   else if (newLvr > 0.9) { warnings.push('Refinance LVR is above 90%. Review LMI and serviceability carefully.'); warningTone = 'warn'; }
-  if (breakeven === 'No break-even') { warnings.push('On these assumptions, the refinance does not break even.'); if (warningTone === 'good') warningTone = 'warn'; }
-  else if (breakeven === 'Immediate') warnings.push('Cashback offsets the upfront refinance costs immediately.');
-  if (netCost > 0 && benefit1 < 0) { warnings.push('The first 12 months still look worse after costs, so this may be a medium-term play rather than an immediate win.'); if (warningTone === 'good') warningTone = 'warn'; }
-  if (!warnings.length) warnings.push('Refinance scenario looks internally consistent on the current assumptions.');
-  const worth = benefit5 > 0 && breakeven !== 'No break-even';
-  const tone: AlertTone = worth ? (newLvr > 0.9 ? 'warn' : 'good') : 'bad';
+  if (extraBorrow === 0 && breakeven === 'No break-even') { warnings.push('The entered repayments provide no simple cash-flow payback under these assumptions.'); if (warningTone === 'good') warningTone = 'warn'; }
+  else if (extraBorrow === 0 && breakeven === 'Immediate') warnings.push('Cashback covers the entered cash fees; estimated LMI may still be added to the loan.');
+  if (extraBorrow === 0 && netCost > 0 && benefit1 < 0) { warnings.push('The first 12 months still look worse after costs, so this may be a medium-term play rather than an immediate win.'); if (warningTone === 'good') warningTone = 'warn'; }
+  warnings.push('LMI is an indicative approximation; other fees are assumed paid upfront. Rates are assumed constant.');
+  warnings.push('Repayment payback is a simple cash-flow measure and ignores differences in remaining balances; compare interest costs and loan terms too.');
+  if (newTerm !== currentTerm) warnings.push('Loan terms differ. Lower repayments can coincide with a higher lifetime interest cost.');
+  if (extraBorrow > 0) warnings.push('Comparative savings are not shown because the new loan includes extra borrowing.');
+  const comparable = extraBorrow === 0;
+  const tone: AlertTone = 'info';
   return {
+    isComplete: true,
     tone,
-    deal: { text: worth ? 'Worth refinancing' : 'Refinance looks weak', tone },
+    deal: { text: 'Indicative refinance comparison', tone },
     warnings,
     warningTone,
     outputs: {
@@ -896,26 +790,26 @@ export const calcRefinance = (inputs: RefinanceInputs) => {
       'Annual repayment difference': formatSignedMoney(annualDiff),
       'Total refinance costs': formatMoney(refiCosts),
       'Net upfront cost': formatMoney(netCost),
-      'Break-even period': breakeven,
+      'Simple repayment payback': comparable ? breakeven : 'Not comparable with extra borrowing',
       'Calculated LMI cost': formatMoney(lmi),
-      'Stay vs refinance benefit (1 year)': formatSignedMoney(benefit1),
-      'Stay vs refinance benefit (3 years)': formatSignedMoney(benefit3),
-      'Stay vs refinance benefit (5 years)': formatSignedMoney(benefit5),
-      'Estimated lifetime interest saved': formatSignedMoney(interestSaved),
+      'Interest and upfront cost difference (1 year)': comparable ? formatSignedMoney(benefit1) : 'Not comparable',
+      'Interest and upfront cost difference (3 years)': comparable ? formatSignedMoney(benefit3) : 'Not comparable',
+      'Interest and upfront cost difference (5 years)': comparable ? formatSignedMoney(benefit5) : 'Not comparable',
+      'Lifetime interest and upfront cost difference': comparable ? formatSignedMoney(interestSaved) : 'Not comparable',
     },
     atAGlance: [
-      { label: 'Worth refinancing?', value: worth ? 'Yes' : 'No', tone },
-      { label: 'Break-even', value: breakeven, tone: breakeven === 'No break-even' ? 'bad' : breakeven === 'Immediate' ? 'good' : 'info' as AlertTone },
-      { label: 'Net upfront cost', value: formatMoney(netCost), tone: netCost > 0 ? 'warn' : 'good' as AlertTone },
-      { label: 'New repayment', value: formatMoney(newRepay), tone: annualDiff > 0 ? 'good' : 'warn' as AlertTone },
-      { label: '12 month benefit', value: formatSignedMoney(benefit1), tone: benefit1 >= 0 ? 'good' : 'warn' as AlertTone },
-      { label: '5 year benefit', value: formatSignedMoney(benefit5), tone: benefit5 >= 0 ? 'good' : 'bad' as AlertTone },
+      {label:'Current repayment',value:formatMoney(currentRepay) + ' / ' + paymentLabel(currentFreq),tone},
+      {label:'New repayment',value:formatMoney(newRepay) + ' / ' + paymentLabel(newFreq),tone},
+      {label:'Annual repayment difference',value:comparable?formatSignedMoney(annualDiff):'Not comparable',tone},
+      {label:'Upfront cost after cashback',value:formatSignedMoney(netCost),tone},
+      {label:'5-year interest and cost difference',value:comparable?formatSignedMoney(benefit5):'Not comparable',tone},
+      {label:'Lifetime interest and cost difference',value:comparable?formatSignedMoney(interestSaved):'Not comparable',tone},
     ],
     decisionGuide: [
-      { label: 'Why this result', value: !worth ? 'The refinance does not recover its costs strongly enough under the current assumptions.' : newLvr > 0.9 ? 'Savings exist, but leverage remains elevated so lender policy matters.' : 'The lower rate appears to recover costs and improve medium-term cashflow.' },
-      { label: 'Best next move', value: !worth ? 'Reprice the current lender first, or test a lower-cost refinance structure.' : 'Confirm lender policy, valuation, and cashback terms before proceeding.' },
-      { label: 'LVR position', value: formatPercent(newLvr) },
-      { label: 'New total loan', value: formatMoney(newLoanTotal) },
+      {label:'Repayment payback (cash flow only)',value:comparable?breakeven:'Not comparable with extra borrowing'},
+      {label:'Terms',value:`${currentTerm} years remaining / ${newTerm} years new`},
+      {label:'New LVR including estimated LMI',value:formatPercent(newLvr)},
+      {label:'New total loan',value:formatMoney(newLoanTotal)},
     ],
   };
 };
@@ -933,6 +827,7 @@ export const calcBorrowing = (inputs: BorrowingInputs) => {
   const existingLoanRepaymentsMonthly = parseNumber(inputs.existingLoanRepaymentsMonthly);
   const creditCardLimits = parseNumber(inputs.creditCardLimits);
   const otherDebtsMonthly = parseNumber(inputs.otherDebtsMonthly);
+  const helpRepaymentsMonthly = parseNumber(inputs.helpRepaymentsMonthly ?? '');
   const actualRate = parseNumber(inputs.actualRate, 5.9);
   const inputBuffer = parseNumber(inputs.assessmentBufferPct, 3);
   const inputFloor = parseNumber(inputs.assessmentFloorRatePct, 8.5);
@@ -947,31 +842,37 @@ export const calcBorrowing = (inputs: BorrowingInputs) => {
   const salaryIncomeAnnual = annualNetIncomeForServicing(grossIncome1) + annualNetIncomeForServicing(grossIncome2);
   const shadedRentAnnual = rentalIncomeMonthly * 12 * (inputs.rentalShadingPct ? inputRentalShade : profile.rentalShadingPct);
   const shadedOtherIncomeAnnual = otherIncomeAnnual * (inputs.otherIncomeShadingPct ? inputOtherShade : profile.otherIncomeShadingPct);
-  const monthlyIncomeUsed = (salaryIncomeAnnual + shadedRentAnnual + shadedOtherIncomeAnnual) / 12;
+  // Simplified allocation: all shaded additional income is allocated to applicant 1 for tax.
+  const monthlyIncomeUsed = (annualNetIncomeForServicing(grossIncome1 + shadedRentAnnual + shadedOtherIncomeAnnual) + annualNetIncomeForServicing(grossIncome2)) / 12;
   const ccCommitment = creditCardLimits * (inputs.creditCardLoadingPct ? inputCardLoad : profile.creditCardLoadingPct);
-  const monthlyCommitments = livingUsed + existingLoanRepaymentsMonthly + ccCommitment + otherDebtsMonthly;
+  const monthlyCommitments = livingUsed + existingLoanRepaymentsMonthly + ccCommitment + otherDebtsMonthly + helpRepaymentsMonthly;
   const monthlySurplus = Math.max(0, (monthlyIncomeUsed - monthlyCommitments) * profile.surplusHaircut);
   const assessmentRateUsed = Math.max(actualRate + (inputs.assessmentBufferPct ? inputBuffer : profile.assessmentBufferPct), inputs.assessmentFloorRatePct ? inputFloor : profile.assessmentFloorRatePct);
-  const borrowingCapacity = monthlySurplus > 0 ? (monthlySurplus * (1 - Math.pow(1 + assessmentRateUsed / 100 / 12, -(loanTerm * 12)))) / (assessmentRateUsed / 100 / 12) : 0;
+  const monthlyAssessmentRate = assessmentRateUsed / 100 / 12;
+  const borrowingCapacity = monthlySurplus > 0 && loanTerm > 0 ? (monthlyAssessmentRate > 0 ? monthlySurplus * (1 - Math.pow(1 + monthlyAssessmentRate, -(loanTerm * 12))) / monthlyAssessmentRate : monthlySurplus * loanTerm * 12) : 0;
   const depositRequired = targetLvr > 0 ? borrowingCapacity * (1 - targetLvr) / targetLvr : 0;
   const maxPurchasePrice = borrowingCapacity + depositRequired;
   const assessmentRepayment = periodicPayment(borrowingCapacity, assessmentRateUsed, loanTerm, 'Monthly');
   const surplusRatio = monthlyIncomeUsed > 0 ? monthlySurplus / monthlyIncomeUsed : 0;
-  const warnings: string[] = [];
-  let warningTone: AlertTone = 'good';
+  const warnings: string[] = ['Illustrative model, not a lender calculator or loan approval. Expense benchmarks and lender profiles are assumptions, not actual lender policy.', 'Uses simplified 2026–27 resident income tax and 2% Medicare levy; offsets, thresholds and individual circumstances are not modelled. All additional income is allocated to applicant 1 for this approximation.', 'Enter HELP repayments and other debts. Existing loans should be entered at the lender-assessed repayment. Purchase price assumes sufficient deposit and excludes duty and purchase costs.'];
+  let warningTone: AlertTone = 'info';
+  if (grossIncome1 <= 0 || !String(inputs.loanTerm ?? '').trim() || !String(inputs.actualRate ?? '').trim() || !String(inputs.targetLvr ?? '').trim() || loanTerm <= 0 || actualRate <= 0 || targetLvr <= 0 || targetLvr > 1 || [grossIncome2,rentalIncomeMonthly,otherIncomeAnnual,livingExpensesMonthly,existingLoanRepaymentsMonthly,creditCardLimits,otherDebtsMonthly,helpRepaymentsMonthly,inputBuffer,inputFloor].some(x=>x<0) || inputRentalShade > 1 || inputOtherShade > 1 || inputRentalShade < 0 || inputOtherShade < 0 || inputCardLoad < 0 || inputCardLoad > 1) {
+    return {isComplete:false, tone:'info' as AlertTone, deal:{text:'Add valid inputs',tone:'info' as AlertTone}, warnings:['Enter income for applicant 1, a positive interest rate and loan term, a target LVR from 0 to 100%, and valid non-negative amounts and percentages.'], warningTone:'info' as AlertTone, outputs:{'Scenario status':'Enter valid values to calculate.'}, borrowingSummary:[], decisionGuide:[]};
+  }
   if (monthlySurplus <= 0) { warnings.push('Monthly surplus is nil or negative after the benchmark expenses and debt commitments, so borrowing capacity is effectively exhausted.'); warningTone = 'bad'; }
   else if (surplusRatio < 0.15) { warnings.push('Serviceability looks tight because only a small share of assessed income remains after benchmark commitments.'); warningTone = 'warn'; }
   if (!warnings.length) warnings.push('Bank-style borrowing estimate is positive on the current assumptions.');
-  const tone: AlertTone = monthlySurplus <= 0 ? 'bad' : surplusRatio < 0.15 ? 'warn' : 'good';
+  const tone: AlertTone = monthlySurplus <= 0 ? 'warn' : 'info';
   return {
+    isComplete:true,
     tone,
-    deal: { text: monthlySurplus <= 0 ? 'Borrowing capacity exhausted' : surplusRatio < 0.15 ? 'Borrowing capacity is tight' : 'Borrowing position looks workable', tone },
+    deal: { text: 'Illustrative borrowing estimate', tone },
     warnings,
     warningTone,
     outputs: {
-      'HEM floor': formatMoney(hemFloor),
+      'Illustrative expense benchmark (not lender HEM)': formatMoney(hemFloor),
       'Living expense used': formatMoney(livingUsed),
-      'Salary income used': formatMoney(salaryIncomeAnnual),
+      'Salary after simplified tax (annual)': formatMoney(salaryIncomeAnnual),
       'Shaded rent': formatMoney(shadedRentAnnual),
       'Other income used': formatMoney(shadedOtherIncomeAnnual),
       'Monthly income used': formatMoney(monthlyIncomeUsed),
@@ -980,14 +881,14 @@ export const calcBorrowing = (inputs: BorrowingInputs) => {
       'Monthly surplus': formatMoney(monthlySurplus),
       'Assessment rate used': `${assessmentRateUsed.toFixed(2)}%`,
       'Borrowing capacity': formatMoney(borrowingCapacity),
-      'Maximum purchase price': formatMoney(maxPurchasePrice),
+      'Illustrative price at target LVR (excludes costs)': formatMoney(maxPurchasePrice),
       'Assessment repayment': formatMoney(assessmentRepayment),
       'Deposit required': formatMoney(depositRequired),
       'Service ratio': formatPercent(surplusRatio),
     },
     borrowingSummary: [
       { label: 'Total borrowing capacity', value: formatMoney(borrowingCapacity), tone },
-      { label: 'Maximum purchase price', value: formatMoney(maxPurchasePrice), tone: 'info' as AlertTone },
+      { label: 'Indicative price before costs', value: formatMoney(maxPurchasePrice), tone: 'info' as AlertTone },
       { label: 'Assessment rate', value: `${assessmentRateUsed.toFixed(2)}%`, tone: targetLvr <= 0.9 ? 'good' : 'warn' as AlertTone },
       { label: 'Target LVR', value: formatPercent(targetLvr), tone: targetLvr <= 0.9 ? 'good' : 'bad' as AlertTone },
     ],
