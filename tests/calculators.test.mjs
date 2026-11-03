@@ -7,9 +7,20 @@ import assert from 'node:assert/strict';
 const temporary = mkdtempSync(join(tmpdir(), 'finance-test-'));
 try {
   buildSync({entryPoints:['src/calculations.ts'],outfile:join(temporary,'calc.cjs'),bundle:true,platform:'node',format:'cjs'});
-  const {DEFAULTS,calcTwoProperties,calcRefinance,calcBorrowing,annualTax}=createRequire(import.meta.url)(join(temporary,'calc.cjs'));
+  const {DEFAULTS,calcOneProperty,calcTwoProperties,calcRefinance,calcBorrowing,annualTax}=createRequire(import.meta.url)(join(temporary,'calc.cjs'));
   assert.equal(annualTax(45000),4020,'2026–27 tax first threshold');
   assert.equal(annualTax(135000),31020,'2026–27 tax middle threshold');
+  const one={...DEFAULTS.oneProperty,purchaseType:'PPR',housePrice:'700000',desiredLvr:'80',yearlyIncome:'120000',interestRate:'',loanTerm:'30'};
+  const noRate=calcOneProperty(one);
+  assert.equal(noRate.outputs['Principal & Interest Repayment'],'Enter rate and term','missing rate must not appear as a zero repayment');
+  assert.equal(noRate.outputs['Gross monthly income less repayment and entered living costs (before tax)'],'-','missing rate must not create a misleading gross surplus');
+  assert.notEqual(noRate.deal.text,'Strong deal','calculator must not imply loan approval');
+  assert.equal(calcOneProperty({...one,purchaseType:''}).isComplete,false,'purchase type must be selected');
+  assert.equal(calcOneProperty({...one,desiredLvr:'101'}).isComplete,false,'LVR above 100 is invalid');
+  assert.equal(calcOneProperty({...one,yearlyIncome:'-100'}).isComplete,false,'negative amounts are invalid');
+  const zeroRate=calcOneProperty({...one,interestRate:'0'});
+  assert.notEqual(zeroRate.outputs['Principal & Interest Repayment'],'Enter rate and term','an explicitly entered zero rate is calculated');
+
   const two={...DEFAULTS.twoProperties,currentValue:'800000',currentMortgage:'400000',secondPrice:'700000',state:'VIC',desiredLvr:'80',loanTerm:'30',interestRate:'6',approvalMax:'500000'};
   const p=calcTwoProperties(two);
   assert.equal(p.outputs['Actual combined base loan'],'$900,000','actual debt reflects approval, not target');

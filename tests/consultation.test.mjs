@@ -1,0 +1,35 @@
+import { buildSync } from 'esbuild';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { createRequire } from 'node:module';
+import assert from 'node:assert/strict';
+const dir=mkdtempSync(join(tmpdir(),'consultation-test-'));
+try {
+  buildSync({entryPoints:['src/consultation.ts'],outfile:join(dir,'form.cjs'),bundle:true,platform:'node',format:'cjs'});
+  const {validateConsultation,sendConsultation}=createRequire(import.meta.url)(join(dir,'form.cjs'));
+  const blank={firstName:'Jamie',lastName:'Tester',phone:'',email:''};
+  assert.match(validateConsultation(blank),/phone number|email address/);
+  assert.match(validateConsultation({...blank,firstName:'  ',phone:'0412345678'}),/first and last/);
+  assert.match(validateConsultation({...blank,email:'bad'}),/valid email/);
+  assert.match(validateConsultation({...blank,phone:'--------'}),/valid phone/);
+  assert.equal(validateConsultation({...blank,phone:'0412 345 678'}),null);
+  assert.equal(validateConsultation({...blank,email:'test@example.com'}),null);
+  assert.equal(validateConsultation({...blank,phone:'0412345678',email:'test@example.com'}),null);
+  let sent;
+  const accept=async (url,opts)=>{sent={url,payload:JSON.parse(opts.body)};return {ok:true,json:async()=>({success:true})};};
+  assert.deepEqual(await sendConsultation('key-test',{...blank,phone:'0412345678'},accept),{ok:true});
+  assert.equal(sent.url,'https://api.web3forms.com/submit');
+  assert.equal(sent.payload.phone,'0412345678');
+  assert.ok(!('email' in sent.payload),'phone-only submissions should not add an empty email');
+  assert.ok(!('to' in sent.payload),'recipient email is never in the public payload');
+  assert.deepEqual(await sendConsultation('key-test',{...blank,email:'test@example.com'},accept),{ok:true});
+  assert.equal(sent.payload.email,'test@example.com');
+  assert.ok(!('phone' in sent.payload),'email-only submissions should not add an empty phone');
+  let requested=false; const unexpected=async()=>{requested=true;throw new Error('unexpected');};
+  assert.equal((await sendConsultation('',{...blank,email:'test@example.com'},unexpected)).ok,false);
+  assert.equal(requested,false,'never submit without a configured key');
+  assert.equal((await sendConsultation('key-test',{...blank,email:'test@example.com'},async()=>({ok:true,json:async()=>({success:false})}))).ok,false,'provider rejection must not show success');
+  assert.equal((await sendConsultation('key-test',{...blank,email:'test@example.com'},async()=>{throw new Error('network');})).ok,false,'network errors must not show success');
+  console.log('Consultation validation, privacy and delivery error checks passed.');
+} finally {rmSync(dir,{recursive:true,force:true});}

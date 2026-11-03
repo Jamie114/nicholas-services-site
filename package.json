@@ -10,7 +10,9 @@
     "predeploy": "npm run build",
     "deploy": "gh-pages -d dist --cname www.nicholasservices.com.au",
     "test:duty": "node tests/duty.test.mjs",
-    "test:calculators": "node tests/calculators.test.mjs"
+    "test:calculators": "node tests/calculators.test.mjs",
+    "test:public": "node tests/public-site.test.mjs",
+    "test:consultation": "node tests/consultation.test.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.57.4",
