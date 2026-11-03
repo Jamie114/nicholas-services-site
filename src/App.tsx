@@ -6,6 +6,7 @@ import { AUSTRALIAN_STATES, type AustralianState, type HomeKind } from './duty';
 import './styles.css';
 import PublicWebsite from './PublicWebsite';
 import CalculatorsPage from './CalculatorsPage';
+import GuestCalculatorPage, { type GuestTool } from './GuestCalculatorPage';
 import BrokerInfoPage from './BrokerInfoPage';
 import { SITE_CONFIG } from './site-config';
 import { formatMoneyInput, parseMoneyInput } from './money-input';
@@ -1858,6 +1859,19 @@ function App() {
           </div>
       </main>
     </div>
+  );
+
+  if (!currentUser && (tab === 'one' || tab === 'two' || tab === 'refi' || tab === 'borrow')) return (
+    <GuestCalculatorPage tool={tab} authReady={authReady} onBrokerSignIn={() => openBrokerSignIn()} onSelectTool={(next: GuestTool) => {
+      if (window.location.hash !== `#calculator-${next}` || window.location.pathname !== '/calculators/') window.history.pushState(null, '', `/calculators/#calculator-${next}`);
+      setTab(next);
+      window.scrollTo({ top: 0, behavior: 'auto' });
+    }}>
+      {tab === 'one' && renderOne()}
+      {tab === 'two' && renderTwo()}
+      {tab === 'refi' && renderRefi()}
+      {tab === 'borrow' && renderBorrow()}
+    </GuestCalculatorPage>
   );
 
   return (
