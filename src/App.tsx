@@ -1766,9 +1766,6 @@ function App() {
                     {authBusy ? 'Working...' : 'Sign In'}
                   </button>
                 </div>
-                <button className="startup-link" onClick={continueAsGuest}>
-                  Continue as Guest
-                </button>
                 {authMessage && <p className="muted">{authMessage}</p>}
                 {!supabaseEnabled && (
                   <p className="muted">
