@@ -6,6 +6,7 @@ import { AUSTRALIAN_STATES, type AustralianState, type HomeKind } from './duty';
 import './styles.css';
 import PublicWebsite from './PublicWebsite';
 import CalculatorsPage from './CalculatorsPage';
+import BrokerInfoPage from './BrokerInfoPage';
 import { SITE_CONFIG } from './site-config';
 import {
   DEFAULTS,
@@ -357,7 +358,9 @@ function App() {
   const [activeAccessLevel, setActiveAccessLevel] = useState<AccessLevel | null>(null);
 
   const isCalculatorsPage = typeof window !== 'undefined' && /^\/calculators\/?$/.test(window.location.pathname);
-  useEffect(() => { document.title = isCalculatorsPage ? `Calculators | ${SITE_CONFIG.businessName}` : `${SITE_CONFIG.businessName} | Home Loans & Mortgage Broking`; }, [isCalculatorsPage]);
+  const isServicesPage = typeof window !== 'undefined' && /^\/how-we-can-help\/?$/.test(window.location.pathname);
+  const isApproachPage = typeof window !== 'undefined' && /^\/our-approach\/?$/.test(window.location.pathname);
+  useEffect(() => { document.title = isCalculatorsPage ? `Calculators | ${SITE_CONFIG.businessName}` : isServicesPage ? `How we can help | ${SITE_CONFIG.businessName}` : isApproachPage ? `Our approach | ${SITE_CONFIG.businessName}` : `${SITE_CONFIG.businessName} | Home Loans & Mortgage Broking`; }, [isCalculatorsPage, isServicesPage, isApproachPage]);
   useEffect(() => {
     if (!showPublicWebsite) return;
     const anchor = window.location.hash.slice(1);
@@ -712,7 +715,7 @@ function App() {
     setActiveCaseId(null);
     setActiveCaseOwnerId(null);
     setActiveAccessLevel(null);
-    setTab('one');
+    setTab('home');
     setStartupStep('ready');
   };
 
@@ -734,7 +737,7 @@ function App() {
     setActiveCaseId(profile.id);
     setActiveCaseOwnerId(profile.ownerId || null);
     setActiveAccessLevel(profile.accessLevel || (profile.source === 'shared' ? 'view' : 'owner'));
-    setTab('one');
+    setTab('home');
     setStartupStep('ready');
   };
 
@@ -1719,40 +1722,14 @@ function App() {
 
   if (showPublicWebsite) return isCalculatorsPage
     ? <CalculatorsPage onOpenCalculator={openPublicCalculator} onBrokerSignIn={() => openBrokerSignIn()} authReady={authReady} />
+    : isServicesPage || isApproachPage
+    ? <BrokerInfoPage page={isServicesPage ? 'services' : 'approach'} onBrokerSignIn={() => openBrokerSignIn()} authReady={authReady} />
     : <PublicWebsite onBrokerSignIn={() => openBrokerSignIn()} authReady={authReady} />;
 
-  return (
-    <div className="app-shell">
-      <button className="website-return" onClick={() => { window.history.pushState(null, '', isCalculatorsPage ? '/calculators/#top' : '/#top'); setShowPublicWebsite(true); window.scrollTo({ top: 0, behavior: 'auto' }); }}>← {isCalculatorsPage ? 'Back to calculators' : 'Back to website'}</button>
-      <header className="topbar">
-        <div>
-          <div className="eyebrow">Mortgage workflow dashboard</div>
-          <h1>{state.meta.brandName || SITE_CONFIG.businessName}</h1>
-          <p>Explore lending scenarios, compare options and prepare client summaries.</p>
-        </div>
-        <div className="header-badge">{currentUser?.email ? `Signed in: ${currentUser.email}` : `Broker: ${state.meta.brokerName || '—'}`}</div>
-      </header>
-
-      <nav className="tabs">
-        {TAB_KEYS.map((item) => (
-          <button key={item.key} className={`tab ${tab === item.key ? 'active' : ''}`} onClick={() => setTab(item.key)}>
-            {item.label}
-          </button>
-        ))}
-      </nav>
-
-      <main className="content">
-        {tab === 'home' && renderHome()}
-        {tab === 'one' && renderOne()}
-        {tab === 'two' && renderTwo()}
-        {tab === 'refi' && renderRefi()}
-        {tab === 'borrow' && renderBorrow()}
-        {tab === 'compare' && renderCompare()}
-        {tab === 'settings' && renderSettings()}
-      </main>
-
-      {startupStep !== 'ready' && (
-        <div className="startup-overlay">
+  if (startupStep !== 'ready') return (
+    <div className="broker-access-page">
+      <header className="broker-access-header"><a href="/" className="broker-access-brand">{SITE_CONFIG.businessName}<span>BROKER WORKSPACE</span></a><a href="/" className="broker-back-link">← Back to website</a></header>
+      <main className="broker-access-content"><div className="broker-access-intro"><div className="broker-access-label">YOUR WORKSPACE</div><h1>A little more clarity,<br/><em>every day.</em></h1><p>Sign in to manage your cases and pick up where you left off.</p><a href="/calculators/">Looking for the public calculators? →</a></div>
           <div className="startup-card">
             {startupStep === 'auth' && (
               <>
@@ -1866,8 +1843,41 @@ function App() {
               </>
             )}
           </div>
+      </main>
+    </div>
+  );
+
+  return (
+    <div className="app-shell">
+      <button className="website-return" onClick={() => { window.history.pushState(null, '', isCalculatorsPage ? '/calculators/#top' : '/#top'); setShowPublicWebsite(true); window.scrollTo({ top: 0, behavior: 'auto' }); }}>← {isCalculatorsPage ? 'Back to calculators' : 'Back to website'}</button>
+      <header className="topbar">
+        <div>
+          <div className="eyebrow">Mortgage workflow dashboard</div>
+          <h1>{state.meta.brandName || SITE_CONFIG.businessName}</h1>
+          <p>Explore lending scenarios, compare options and prepare client summaries.</p>
         </div>
-      )}
+        <div className="header-badge">{currentUser?.email ? `Signed in: ${currentUser.email}` : `Broker: ${state.meta.brokerName || '—'}`}</div>
+      </header>
+
+      <nav className="tabs">
+        {TAB_KEYS.map((item) => (
+          <button key={item.key} className={`tab ${tab === item.key ? 'active' : ''}`} onClick={() => setTab(item.key)}>
+            {item.label}
+          </button>
+        ))}
+      </nav>
+
+      <main className="content">
+        {tab === 'home' && renderHome()}
+        {tab === 'one' && renderOne()}
+        {tab === 'two' && renderTwo()}
+        {tab === 'refi' && renderRefi()}
+        {tab === 'borrow' && renderBorrow()}
+        {tab === 'compare' && renderCompare()}
+        {tab === 'settings' && renderSettings()}
+      </main>
+
+
     </div>
   );
 }

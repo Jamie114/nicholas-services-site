@@ -11,7 +11,7 @@ export function PublicHeader({onBrokerSignIn,authReady}: ChromeProps) {
       <a className="public-logo" href="/"><span className="public-logo-mark"><Home size={20} strokeWidth={1.7}/></span><span>{SITE_CONFIG.businessName}<small>HOME LOANS &amp; FINANCE</small></span></a>
       <button className="public-menu-toggle" onClick={()=>setMenuOpen(!menuOpen)} aria-expanded={menuOpen} aria-controls="public-navigation" aria-label={menuOpen?'Close navigation':'Open navigation'}>{menuOpen?<X size={22}/>:<Menu size={22}/>}</button>
       <nav id="public-navigation" className={`public-links ${menuOpen?'open':''}`} aria-label="Main navigation">
-        <a className="public-mobile-consult" href="/#consultation">Free consultation</a><a href="/#services">How we can help</a><a href="/#approach">Our approach</a><a href="/calculators/">Calculators</a>
+        <a className="public-mobile-consult" href="/#consultation">Free consultation</a><a href="/how-we-can-help/">How we can help</a><a href="/our-approach/">Our approach</a><a href="/calculators/">Calculators</a>
         <button className="public-login" onClick={()=>{setMenuOpen(false);onBrokerSignIn();}} disabled={!authReady}><KeyRound size={15}/> Broker sign in</button>
         <a className="public-nav-cta" href="/#consultation">Free consultation <ArrowUpRight size={16}/></a>
       </nav>
