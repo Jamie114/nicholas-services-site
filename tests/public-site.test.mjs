@@ -14,16 +14,20 @@ const plugin=(key,mockAuth=false)=>({name:'fake-dependencies',setup(builder){
 }});
 const common={bundle:true,platform:'node',format:'cjs',jsx:'automatic',external:['react','react/jsx-runtime','react-dom','lucide-react','jspdf'],loader:{'.css':'empty'}};
 try {
-  async function render(entry,key,authReady=true) {
+  async function render(entry,key,authReady=true,extra={}) {
     const out=join(dir,`${entry}-${key||'blank'}.cjs`);
     await build({...common,entryPoints:[`src/${entry}.tsx`],outfile:out,plugins:[plugin(key)]});
     const Component=require(out).default;
-    return renderToStaticMarkup(React.createElement(Component,{authReady,onOpenCalculator:()=>{},onBrokerSignIn:()=>{}}));
+    return renderToStaticMarkup(React.createElement(Component,{authReady,onOpenCalculator:()=>{},onBrokerSignIn:()=>{},...extra}));
   }
   const home=await render('PublicWebsite','');
   assert.ok(home.includes('Euystratios Brokers'),'business name is shown');
   assert.ok(home.includes('MORTGAGE BROKING, MADE PERSONAL'),'home introduces the brokerage');
-  assert.ok(home.includes('id="services"'),'brokerage services are on the homepage');
+  assert.ok(!home.includes('id="services"'),'services have moved off the home page');
+  for (const url of ['/how-we-can-help/','/our-approach/','/calculators/']) assert.ok(home.includes(`href="${url}"`), `missing navigation ${url}`);
+  assert.ok(home.indexOf('Curious about') < home.indexOf('class="public-strip"'),'calculator teaser comes before the final banner');
+  assert.ok(home.indexOf('class="public-strip"') > home.indexOf('id="consultation"'),'banner follows the consultation');
+  assert.ok(home.indexOf('class="public-strip"') < home.indexOf('</main>') && !home.slice(home.indexOf('class="public-strip"'),home.indexOf('</main>')).includes('<section'),'banner is the final home page section');
   assert.ok(home.includes('href="/calculators/"'),'homepage links to the separate calculator guide');
   assert.ok(home.includes('Request a free consultation'),'consultation form is on the home page');
   assert.ok(home.includes('Online enquiries are not available yet.'),'unconfigured form is clearly unavailable');
@@ -34,6 +38,11 @@ try {
   assert.ok(!home.includes('tel:'),'no invented phone number');
   const configured=await render('PublicWebsite','test-key');
   assert.ok(!configured.includes('<fieldset disabled='),'configured form is enabled');
+  const services=await render('BrokerInfoPage','',true,{page:'services'});
+  const approach=await render('BrokerInfoPage','',true,{page:'approach'});
+  assert.ok(services.includes('Buying your first home') && services.includes('Investing in property'),'services page explains all property goals');
+  assert.ok(approach.includes('Tell us what matters to you'),'approach page explains the process');
+  for (const html of [home,services,approach]) assert.ok(!/public-section-label\"><span>\d/.test(html),'headings have no number badges');
   const calculators=await render('CalculatorsPage','');
   for(const hash of ['one','two','refi','borrow']) assert.ok(calculators.includes(`href="/calculators/#calculator-${hash}"`),`missing tool link ${hash}`);
   assert.ok(calculators.includes('HOW TO USE THE TOOLS'),'calculator guide explains how to get started');
@@ -51,6 +60,10 @@ try {
   globalThis.window.location.pathname='/calculators/';
   const appCalculators=renderToStaticMarkup(React.createElement(App));
   assert.ok(appCalculators.includes('HOW TO USE THE TOOLS'),'the app renders the guide at /calculators/');
+  globalThis.window.location.pathname='/how-we-can-help/';
+  assert.ok(renderToStaticMarkup(React.createElement(App)).includes('Buying your first home'),'the services route renders');
+  globalThis.window.location.pathname='/our-approach/';
+  assert.ok(renderToStaticMarkup(React.createElement(App)).includes('Tell us what matters to you'),'the approach route renders');
   delete globalThis.window; delete globalThis.localStorage;
-  console.log('Broker home, calculator guide, form states and routes passed.');
+  console.log('Broker home, service pages, calculator guide, form states and routes passed.');
 } finally {rmSync(dir,{recursive:true,force:true});}
