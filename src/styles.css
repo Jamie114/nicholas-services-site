@@ -340,3 +340,9 @@ button:focus-visible, summary:focus-visible, input:focus-visible, select:focus-v
 .broker-access-page .startup-menu > button.secondary { background: #e5eee3; color: #254d3e; }
 .broker-access-page .startup-actions button:disabled { opacity: .55; cursor: not-allowed; }
 @media (max-width: 720px) { .broker-access-header { padding: 22px 20px; } .broker-access-content { padding: 45px 20px 70px; grid-template-columns: 1fr; gap: 35px; } .broker-access-intro h1 { font-size: 3.2rem; } }
+
+.calculator-disclaimer { margin: 0 0 22px; padding: 18px 22px; border: 1px solid #d8c995; border-left: 4px solid #b18a35; border-radius: 12px; background: #fff9e9; color: #574a2d; font-size: .91rem; line-height: 1.6; }
+.calculator-disclaimer strong { display: block; color: #44381e; font-size: 1rem; margin-bottom: 5px; }
+.calculator-disclaimer p { margin: 5px 0; }
+
+@media (min-width: 1051px) { .tabs.guest-tabs { grid-template-columns: repeat(4, minmax(0, 1fr)); } }

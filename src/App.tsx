@@ -8,6 +8,7 @@ import PublicWebsite from './PublicWebsite';
 import CalculatorsPage from './CalculatorsPage';
 import BrokerInfoPage from './BrokerInfoPage';
 import { SITE_CONFIG } from './site-config';
+import { formatMoneyInput, parseMoneyInput } from './money-input';
 import {
   DEFAULTS,
   DISCLAIMER,
@@ -87,11 +88,18 @@ const blankState = (): SavedState => ({
   caseName: '',
 });
 
+export function MoneyInput({ value, onChange }: { value: string; onChange: (value: string) => void }) {
+  const [focused, setFocused] = useState(false);
+  return <input type="text" inputMode="decimal" value={focused ? value : formatMoneyInput(value)}
+    onFocus={() => setFocused(true)} onBlur={() => setFocused(false)}
+    onChange={(event) => { const next = parseMoneyInput(event.target.value); if (next !== null) onChange(next); }} />;
+}
+
 const field = <T extends string | boolean>(
   label: string,
   value: T,
   onChange: (value: T) => void,
-  type: 'text' | 'number' | 'select' = 'text',
+  type: 'text' | 'number' | 'money' | 'select' = 'text',
   options: string[] = [],
 ) => {
   if (type === 'select') {
@@ -109,6 +117,7 @@ const field = <T extends string | boolean>(
       </label>
     );
   }
+  if (type === 'money') return <label className="field"><span>{label}</span><MoneyInput value={String(value)} onChange={(next) => onChange(next as T)} /></label>;
   return (
     <label className="field">
       <span>{label}</span>
@@ -194,7 +203,8 @@ function DetailSection({ title, rows }: { title: string; rows: Array<{ label: st
   );
 }
 
-function Actions({
+export function Actions({
+  guest,
   onSaveTab,
   onLoadTab,
   onPdf,
@@ -203,6 +213,7 @@ function Actions({
   compareLabel,
   onCompare,
 }: {
+  guest: boolean;
   onSaveTab: () => void;
   onLoadTab: () => void;
   onPdf: () => void;
@@ -211,6 +222,7 @@ function Actions({
   compareLabel: string;
   onCompare: (slot: CompareSlot) => void;
 }) {
+  if (guest) return <div className="button-row"><button className="secondary" onClick={onResetTab}>Reset calculator</button></div>;
   return (
     <div className="button-row">
       <button disabled={!resultsReady} onClick={() => onCompare('A')}>Save to Compare A</button>
@@ -1319,7 +1331,7 @@ function App() {
             </select></label>
             {field('Property state / territory', state.one.state || 'VIC', (v) => setState((prev) => ({ ...prev, one: { ...prev.one, state: v as AustralianState, firstHomeReliefOptOut: false, ntPackageEligible: false, schemeArea: '' } })), 'select', AUSTRALIAN_STATES)}
             {field('Property type', state.one.homeKind || 'Established', (v) => setState((prev) => ({ ...prev, one: { ...prev.one, homeKind: v as HomeKind, firstHomeReliefOptOut: false, ntPackageEligible: false } })), 'select', ['Established', 'New'])}
-            {!state.one.maxPurchaseMode && field('Purchase price ($)', state.one.housePrice, (v) => patchOne('housePrice', v as string), 'number')}
+            {!state.one.maxPurchaseMode && field('Purchase price ($)', state.one.housePrice, (v) => patchOne('housePrice', v as string), 'money')}
           </div>
           {state.one.purchaseType === 'FHOG' && <div className="relief-note"><strong>First-home duty relief is automatic</strong><p>We apply the selected state's rules where available, assuming the buyers qualify. Check the conditions for this purchase.</p><label><input type="checkbox" checked={!!state.one.firstHomeReliefOptOut} onChange={(e) => patchOne('firstHomeReliefOptOut', e.target.checked)} /> Buyers are not eligible — turn off first-home relief</label></div>}
           <div className="section-heading"><span>02</span><div><h3>Loan and deposit</h3><p>Set the loan structure and available funds.</p></div></div>
@@ -1329,18 +1341,18 @@ function App() {
             {state.one.lmiExempt && field('LMI waiver basis', state.one.lmiBasis || 'Lender / professional waiver', (v) => patchOne('lmiBasis', v as OnePropertyInputs['lmiBasis']), 'select', ['Lender / professional waiver', '5% Deposit Scheme'])}
             {state.one.lmiExempt && state.one.lmiBasis !== '5% Deposit Scheme' && field('Maximum LVR for waiver (%)', state.one.exemptCap ?? '95', (v) => patchOne('exemptCap', v as string), 'number')}
             {state.one.lmiExempt && state.one.lmiBasis === '5% Deposit Scheme' && field('Scheme price-cap area', state.one.schemeArea || '', (v) => patchOne('schemeArea', v as OnePropertyInputs['schemeArea']), 'select', ['Capital / eligible regional centre', 'Other areas'])}
-            {field('Available cash for deposit and costs ($)', state.one.maxCashContribution, (v) => patchOne('maxCashContribution', v as string), 'number')}
-            {field('Loan approval limit ($)', state.one.loanApprovalMax, (v) => patchOne('loanApprovalMax', v as string), 'number')}
+            {field('Available cash for deposit and costs ($)', state.one.maxCashContribution, (v) => patchOne('maxCashContribution', v as string), 'money')}
+            {field('Loan approval limit ($)', state.one.loanApprovalMax, (v) => patchOne('loanApprovalMax', v as string), 'money')}
             {field('Interest rate (%)', state.one.interestRate, (v) => patchOne('interestRate', v as string), 'number')}
             {field('Loan term (years)', state.one.loanTerm, (v) => patchOne('loanTerm', v as string), 'number')}
             {field('Repayment frequency', state.one.repaymentFrequency, (v) => patchOne('repaymentFrequency', v as Frequency | ''), 'select', ['Monthly', 'Fortnightly', 'Weekly'])}
-            {field('Extra principal per year ($)', state.one.extraPrincipal, (v) => patchOne('extraPrincipal', v as string), 'number')}
+            {field('Extra principal per year ($)', state.one.extraPrincipal, (v) => patchOne('extraPrincipal', v as string), 'money')}
           </div>
           {state.one.lmiExempt && state.one.lmiBasis !== '5% Deposit Scheme' && <p className="helper-note" role="status">{oneCalc.invalidWaiverCap ? 'Enter a waiver maximum LVR between 0% and 100% to calculate this scenario.' : oneCalc.waiverLimitsLvr ? `Your desired LVR stays at ${oneCalc.outputs['Requested LVR']}; this scenario uses ${oneCalc.outputs['Applied / Capped LVR']} to stay within the waiver limit.` : 'The calculation stays within the waiver maximum. Turn off the waiver to explore a higher LVR with estimated LMI.'}</p>}
           <div className="section-heading"><span>03</span><div><h3>Income and extras</h3><p>Optional details for a fuller picture.</p></div></div>
           <div className="field-grid">
-            {field('Gross yearly income before tax ($)', state.one.yearlyIncome, (v) => patchOne('yearlyIncome', v as string), 'number')}
-            {field('Monthly living expenses ($)', state.one.livingExpensesMonthly, (v) => patchOne('livingExpensesMonthly', v as string), 'number')}
+            {field('Gross yearly income before tax ($)', state.one.yearlyIncome, (v) => patchOne('yearlyIncome', v as string), 'money')}
+            {field('Monthly living expenses ($)', state.one.livingExpensesMonthly, (v) => patchOne('livingExpensesMonthly', v as string), 'money')}
           </div>
           <div className="checkbox-grid">
             <label className="check-field"><input type="checkbox" checked={state.one.useGuarantor} onChange={(e) => patchOne('useGuarantor', e.target.checked)} /> Use guarantor</label>
@@ -1349,6 +1361,7 @@ function App() {
           </div>
           <p className="muted scenario-note">Estimates include an assumed $2,000 in transfer fees and an indicative LMI estimate; actual costs vary. Duty uses standard residential rules as at 2 November 2026. Check eligibility and dates; land, mixed eligibility, foreign surcharges and special concessions need separate assessment. Confirm any LMI waiver with the lender and check the scheme postcode and valuation.</p>
           <Actions
+            guest={!currentUser}
             onSaveTab={() => saveTab('one')}
             onLoadTab={() => loadTab('one')}
             onPdf={() =>
@@ -1395,27 +1408,27 @@ function App() {
           <div className="section-heading"><span>01</span><div><h3>Existing property</h3><p>Start with the value and mortgage today.</p></div></div>
           <div className="field-grid">
             {field('Scenario name (optional)', state.two.scenarioName, (v) => patchTwo('scenarioName', v as string))}
-            {field('Current property value ($)', state.two.currentValue, (v) => patchTwo('currentValue', v as string), 'number')}
-            {field('Current mortgage balance ($)', state.two.currentMortgage, (v) => patchTwo('currentMortgage', v as string), 'number')}
-            {field('Current property rent per month ($)', state.two.currentRent, (v) => patchTwo('currentRent', v as string), 'number')}
+            {field('Current property value ($)', state.two.currentValue, (v) => patchTwo('currentValue', v as string), 'money')}
+            {field('Current mortgage balance ($)', state.two.currentMortgage, (v) => patchTwo('currentMortgage', v as string), 'money')}
+            {field('Current property rent per month ($)', state.two.currentRent, (v) => patchTwo('currentRent', v as string), 'money')}
           </div>
           <div className="checkbox-grid"><label className="check-field"><input type="checkbox" checked={state.two.withdraw80} onChange={(e) => patchTwo('withdraw80', e.target.checked)} /> Release available equity up to 80% LVR</label></div>
           <div className="section-heading"><span>02</span><div><h3>New property</h3><p>Enter the price, location and expected rent.</p></div></div>
           <div className="field-grid">
-            {field('Purchase price ($)', state.two.secondPrice, (v) => patchTwo('secondPrice', v as string), 'number')}
+            {field('Purchase price ($)', state.two.secondPrice, (v) => patchTwo('secondPrice', v as string), 'money')}
             <label className="field"><span>New property use</span><select value={state.two.secondPurpose || 'Investment'} onChange={(e) => patchTwo('secondPurpose', e.target.value as 'Investment' | 'PPR')}><option value="Investment">Investment</option><option value="PPR">Owner occupier</option></select></label>
             {field('New property state / territory', state.two.state || 'VIC', (v) => patchTwo('state', v as AustralianState), 'select', AUSTRALIAN_STATES)}
-            {field('New property rent per month ($)', state.two.newRent, (v) => patchTwo('newRent', v as string), 'number')}
-            {field('Annual property costs for both ($)', state.two.annualPropertyCosts ?? '', (v) => patchTwo('annualPropertyCosts', v as string), 'number')}
+            {field('New property rent per month ($)', state.two.newRent, (v) => patchTwo('newRent', v as string), 'money')}
+            {field('Annual property costs for both ($)', state.two.annualPropertyCosts ?? '', (v) => patchTwo('annualPropertyCosts', v as string), 'money')}
           </div>
           <p className="helper-note">Include rates, land tax, insurance, management and other costs in the annual amount. Leave blank if unknown; cash flow after costs will stay unavailable.</p>
           <div className="section-heading"><span>03</span><div><h3>Loan structure</h3><p>These assumptions apply to both loans.</p></div></div>
           <div className="field-grid">
             {field('Target combined LVR (%)', state.two.desiredLvr, (v) => patchTwo('desiredLvr', v as string), 'number')}
-            {field('New loan approval limit ($)', state.two.approvalMax, (v) => patchTwo('approvalMax', v as string), 'number')}
+            {field('New loan approval limit ($)', state.two.approvalMax, (v) => patchTwo('approvalMax', v as string), 'money')}
             {field('Interest rate for both loans (%)', state.two.interestRate, (v) => patchTwo('interestRate', v as string), 'number')}
             {field('Loan term for both loans (years)', state.two.loanTerm, (v) => patchTwo('loanTerm', v as string), 'number')}
-            {field('Gross annual income (optional)', state.two.yearlyIncome, (v) => patchTwo('yearlyIncome', v as string), 'number')}
+            {field('Gross annual income (optional) ($)', state.two.yearlyIncome, (v) => patchTwo('yearlyIncome', v as string), 'money')}
             {state.two.lmiExempt && field('Maximum LVR for LMI waiver (%)', state.two.exemptCap, (v) => patchTwo('exemptCap', v as string), 'number')}
           </div>
           <div className="checkbox-grid">
@@ -1424,6 +1437,7 @@ function App() {
           </div>
           <p className="muted scenario-note">A simplified purchase estimate, not a bank approval. Purchase costs, loan structure, tax and lender policy require independent review.</p>
           <Actions
+            guest={!currentUser}
             onSaveTab={() => saveTab('two')}
             onLoadTab={() => loadTab('two')}
             onPdf={() =>
@@ -1471,8 +1485,8 @@ function App() {
           <div className="section-heading"><span>01</span><div><h3>Your current loan</h3><p>Use the remaining term, not the original term.</p></div></div>
           <div className="field-grid">
             {field('Scenario name', state.refi.scenarioName, (v) => patchRefi('scenarioName', v as string))}
-            {field('Current property value', state.refi.currentValue, (v) => patchRefi('currentValue', v as string), 'number')}
-            {field('Current loan', state.refi.currentLoan, (v) => patchRefi('currentLoan', v as string), 'number')}
+            {field('Current property value ($)', state.refi.currentValue, (v) => patchRefi('currentValue', v as string), 'money')}
+            {field('Current loan ($)', state.refi.currentLoan, (v) => patchRefi('currentLoan', v as string), 'money')}
             {field('Current rate (%)', state.refi.currentRate, (v) => patchRefi('currentRate', v as string), 'number')}
             {field('Current remaining term (years)', state.refi.currentTerm, (v) => patchRefi('currentTerm', v as string), 'number')}
             {field('Current frequency', state.refi.currentFreq, (v) => patchRefi('currentFreq', v as Frequency | ''), 'select', ['Monthly', 'Fortnightly', 'Weekly'])}
@@ -1481,13 +1495,13 @@ function App() {
             {field('New term (years)', state.refi.newTerm, (v) => patchRefi('newTerm', v as string), 'number')}
             {field('New frequency', state.refi.newFreq, (v) => patchRefi('newFreq', v as Frequency | ''), 'select', ['Monthly', 'Fortnightly', 'Weekly'])}
           </div><div className="section-heading"><span>03</span><div><h3>Switching costs</h3><p>Include any early break fee in the discharge amount.</p></div></div><div className="field-grid">
-            {field('Discharge / break fee', state.refi.dischargeFee, (v) => patchRefi('dischargeFee', v as string), 'number')}
-            {field('Application fee', state.refi.applicationFee, (v) => patchRefi('applicationFee', v as string), 'number')}
-            {field('Legal fee', state.refi.legalFee, (v) => patchRefi('legalFee', v as string), 'number')}
-            {field('Valuation fee', state.refi.valuationFee, (v) => patchRefi('valuationFee', v as string), 'number')}
-            {field('Government fee', state.refi.govFee, (v) => patchRefi('govFee', v as string), 'number')}
-            {field('Cashback', state.refi.cashback, (v) => patchRefi('cashback', v as string), 'number')}
-            {field('Extra borrowing ($)', state.refi.extraBorrow, (v) => patchRefi('extraBorrow', v as string), 'number')}
+            {field('Discharge / break fee ($)', state.refi.dischargeFee, (v) => patchRefi('dischargeFee', v as string), 'money')}
+            {field('Application fee ($)', state.refi.applicationFee, (v) => patchRefi('applicationFee', v as string), 'money')}
+            {field('Legal fee ($)', state.refi.legalFee, (v) => patchRefi('legalFee', v as string), 'money')}
+            {field('Valuation fee ($)', state.refi.valuationFee, (v) => patchRefi('valuationFee', v as string), 'money')}
+            {field('Government fee ($)', state.refi.govFee, (v) => patchRefi('govFee', v as string), 'money')}
+            {field('Cashback ($)', state.refi.cashback, (v) => patchRefi('cashback', v as string), 'money')}
+            {field('Extra borrowing ($)', state.refi.extraBorrow, (v) => patchRefi('extraBorrow', v as string), 'money')}
           </div>
           <div className="checkbox-grid">
             <label className="check-field">
@@ -1496,6 +1510,7 @@ function App() {
           </div>
           <p className="muted scenario-note">Assumes rates remain constant and fees are paid upfront. LMI is an estimate. A lower repayment can reflect a longer loan term.</p>
           <Actions
+            guest={!currentUser}
             onSaveTab={() => saveTab('refi')}
             onLoadTab={() => loadTab('refi')}
             onPdf={() =>
@@ -1547,16 +1562,16 @@ function App() {
             {field('Applicant type', state.borrow.applicantType, (v) => patchBorrow('applicantType', v as ApplicantType | ''), 'select', ['Single', 'Couple'])}
             {field('Dependants', state.borrow.dependants, (v) => patchBorrow('dependants', v as string), 'number')}
             {field('Loan purpose', state.borrow.loanPurpose, (v) => patchBorrow('loanPurpose', v as LoanPurpose | ''), 'select', ['Owner Occupier', 'Investment'])}
-            {field('Gross income 1', state.borrow.grossIncome1, (v) => patchBorrow('grossIncome1', v as string), 'number')}
-            {field('Gross income 2', state.borrow.grossIncome2, (v) => patchBorrow('grossIncome2', v as string), 'number')}
-            {field('Rental income monthly', state.borrow.rentalIncomeMonthly, (v) => patchBorrow('rentalIncomeMonthly', v as string), 'number')}
-            {field('Other income annual', state.borrow.otherIncomeAnnual, (v) => patchBorrow('otherIncomeAnnual', v as string), 'number')}
+            {field('Gross income 1 ($)', state.borrow.grossIncome1, (v) => patchBorrow('grossIncome1', v as string), 'money')}
+            {field('Gross income 2 ($)', state.borrow.grossIncome2, (v) => patchBorrow('grossIncome2', v as string), 'money')}
+            {field('Rental income monthly ($)', state.borrow.rentalIncomeMonthly, (v) => patchBorrow('rentalIncomeMonthly', v as string), 'money')}
+            {field('Other income annual ($)', state.borrow.otherIncomeAnnual, (v) => patchBorrow('otherIncomeAnnual', v as string), 'money')}
           </div><div className="section-heading"><span>02</span><div><h3>Expenses and debts</h3><p>Include all relevant monthly commitments.</p></div></div><div className="field-grid">
-            {field('Living expenses monthly', state.borrow.livingExpensesMonthly, (v) => patchBorrow('livingExpensesMonthly', v as string), 'number')}
-            {field('Existing loan repayments monthly', state.borrow.existingLoanRepaymentsMonthly, (v) => patchBorrow('existingLoanRepaymentsMonthly', v as string), 'number')}
-            {field('Credit card limits', state.borrow.creditCardLimits, (v) => patchBorrow('creditCardLimits', v as string), 'number')}
-            {field('Other debts monthly', state.borrow.otherDebtsMonthly, (v) => patchBorrow('otherDebtsMonthly', v as string), 'number')}
-            {field('HELP / study loan repayment monthly ($)', state.borrow.helpRepaymentsMonthly ?? '', (v) => patchBorrow('helpRepaymentsMonthly', v as string), 'number')}
+            {field('Living expenses monthly ($)', state.borrow.livingExpensesMonthly, (v) => patchBorrow('livingExpensesMonthly', v as string), 'money')}
+            {field('Existing loan repayments monthly ($)', state.borrow.existingLoanRepaymentsMonthly, (v) => patchBorrow('existingLoanRepaymentsMonthly', v as string), 'money')}
+            {field('Credit card limits ($)', state.borrow.creditCardLimits, (v) => patchBorrow('creditCardLimits', v as string), 'money')}
+            {field('Other debts monthly ($)', state.borrow.otherDebtsMonthly, (v) => patchBorrow('otherDebtsMonthly', v as string), 'money')}
+            {field('HELP / study loan repayment monthly ($)', state.borrow.helpRepaymentsMonthly ?? '', (v) => patchBorrow('helpRepaymentsMonthly', v as string), 'money')}
           </div><div className="section-heading"><span>03</span><div><h3>Loan assumptions</h3><p>Set the proposed rate, term and LVR.</p></div></div><div className="field-grid">
             {field('Actual rate (%)', state.borrow.actualRate, (v) => patchBorrow('actualRate', v as string), 'number')}
             {field('Loan term (years)', state.borrow.loanTerm, (v) => patchBorrow('loanTerm', v as string), 'number')}
@@ -1570,6 +1585,7 @@ function App() {
           </div></details>
           <p className="muted scenario-note">Illustrative resident tax and living-cost benchmarks; enter assessed existing loans and HELP separately. The purchase-price estimate assumes the required deposit and excludes purchase costs.</p>
           <Actions
+            guest={!currentUser}
             onSaveTab={() => saveTab('borrow')}
             onLoadTab={() => loadTab('borrow')}
             onPdf={() =>
@@ -1849,29 +1865,30 @@ function App() {
       <button className="website-return" onClick={() => { window.history.pushState(null, '', isCalculatorsPage ? '/calculators/#top' : '/#top'); setShowPublicWebsite(true); window.scrollTo({ top: 0, behavior: 'auto' }); }}>← {isCalculatorsPage ? 'Back to calculators' : 'Back to website'}</button>
       <header className="topbar">
         <div>
-          <div className="eyebrow">Mortgage workflow dashboard</div>
-          <h1>{state.meta.brandName || SITE_CONFIG.businessName}</h1>
-          <p>Explore lending scenarios, compare options and prepare client summaries.</p>
+          <div className="eyebrow">{currentUser ? 'Mortgage workflow dashboard' : 'FREE HOME LOAN CALCULATORS'}</div>
+          <h1>{currentUser ? (state.meta.brandName || SITE_CONFIG.businessName) : 'Explore your numbers'}</h1>
+          <p>{currentUser ? 'Explore lending scenarios, compare options and prepare client summaries.' : 'Choose a calculator and explore different scenarios at your own pace.'}</p>
         </div>
-        <div className="header-badge">{currentUser?.email ? `Signed in: ${currentUser.email}` : `Broker: ${state.meta.brokerName || '—'}`}</div>
+        <div className="header-badge">{currentUser?.email ? `Signed in: ${currentUser.email}` : 'No account required'}</div>
       </header>
 
-      <nav className="tabs">
-        {TAB_KEYS.map((item) => (
+      <nav className={`tabs ${!currentUser ? 'guest-tabs' : ''}`} aria-label="Calculator navigation">
+        {TAB_KEYS.filter((item) => !!currentUser || ['one', 'two', 'refi', 'borrow'].includes(item.key)).map((item) => (
           <button key={item.key} className={`tab ${tab === item.key ? 'active' : ''}`} onClick={() => setTab(item.key)}>
             {item.label}
           </button>
         ))}
       </nav>
 
+      {!currentUser && <aside className="calculator-disclaimer" aria-label="Important information about these calculators"><strong>Important: about your estimate</strong><p>These calculators provide general estimates to help you explore scenarios. Results depend on the information and assumptions used, can contain errors and do not consider all of your circumstances. They are not loan approval or personal financial advice. Rates, lender policies, taxes, fees and eligibility can change; actual outcomes may differ.</p><p>Do not rely on an estimate to make a financial product decision. Consider advice from an appropriately licensed professional and confirm the details with your lender and relevant authorities. Your rights under Australian law are not excluded.</p><p>Entries are stored in this browser on this device, so take care when using a shared computer.</p></aside>}
       <main className="content">
-        {tab === 'home' && renderHome()}
+        {currentUser && tab === 'home' && renderHome()}
         {tab === 'one' && renderOne()}
         {tab === 'two' && renderTwo()}
         {tab === 'refi' && renderRefi()}
         {tab === 'borrow' && renderBorrow()}
-        {tab === 'compare' && renderCompare()}
-        {tab === 'settings' && renderSettings()}
+        {currentUser && tab === 'compare' && renderCompare()}
+        {currentUser && tab === 'settings' && renderSettings()}
       </main>
 
 
