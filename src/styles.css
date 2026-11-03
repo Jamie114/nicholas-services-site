@@ -319,3 +319,6 @@ button { cursor: pointer; }
 button:focus-visible, summary:focus-visible, input:focus-visible, select:focus-visible { outline:3px solid #60a5fa; outline-offset:3px; }
 @media (max-width: 900px) { .workflow-grid { grid-template-columns:repeat(2,minmax(0,1fr)); } }
 @media (max-width: 600px) { .home-hero { grid-template-columns:1fr; } .home-hero-copy { padding:28px; } .home-hero-aside { display:none; } .home-heading { display:block; } .home-heading p { margin-top:8px; } .workflow-grid, .mode-picker { grid-template-columns:1fr; } .workflow-card { min-height:150px; } }
+.website-return{border:0;background:transparent;color:#315b4b;padding:0;margin:0 0 14px;font-size:.9rem;font-weight:700}.website-return:hover{text-decoration:underline}
+.banner-list{font-weight:400;line-height:1.55;margin:8px 0 0;padding-left:20px}.banner-list li+li{margin-top:5px}
+.button-row button:disabled{opacity:.5;cursor:not-allowed}.button-row button:disabled:hover{background:#e8eef9;color:#223150}

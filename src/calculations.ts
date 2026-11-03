@@ -1,3 +1,4 @@
+import { SITE_CONFIG } from './site-config';
 import { residentialDuty, schemePriceCap, AUSTRALIAN_STATES, type AustralianState, type HomeKind } from './duty';
 export type Frequency = 'Monthly' | 'Fortnightly' | 'Weekly';
 export type PurchaseType = 'PPR' | 'FHOG' | 'Investment';
@@ -14,7 +15,7 @@ export const FREQUENCIES: Record<Frequency, number> = {
 
 export const DEFAULTS = {
   meta: {
-    brandName: 'XYZ Finance Specialists',
+    brandName: SITE_CONFIG.businessName,
     brokerName: '',
     propertyOneName: '',
     propertyTwoName: '',
@@ -292,9 +293,9 @@ export const scoreOnePropertyScenario = ({
   if (baseLvr <= 0.8) score += 2;
   else if (baseLvr <= 0.9) score += 1;
   if (maxPurchaseMode) score -= 1;
-  if (score >= 5) return { text: 'Strong deal', tone: 'good' };
-  if (score >= 3) return { text: 'Stretch but acceptable', tone: 'warn' };
-  return { text: 'High-risk structure', tone: 'bad' };
+  if (score >= 5) return { text: 'Indicative estimate', tone: 'info' };
+  if (score >= 3) return { text: 'Review your assumptions', tone: 'info' };
+  return { text: 'Review lending and cash flow', tone: 'warn' };
 };
 
 export const buildOnePropertyRecommendations = ({
@@ -306,7 +307,7 @@ export const buildOnePropertyRecommendations = ({
   const actions: string[] = [];
   const cashShortfall = maxCashContribution > 0 ? Math.max(0, oop - maxCashContribution) : 0;
   if (fhogBad) actions.push('Review the purchase eligibility and lending policy.');
-  if (extraCash > 0) actions.push(`The structure is short by about ${formatMoney(extraCash)} on borrowing power. Lift approval, add cash, or reduce the target price.`);
+  if (extraCash > 0) actions.push(`The entered loan limit is ${formatMoney(extraCash)} below the requested base loan. Consider more available cash or a lower price, and check lending options.`);
   if (cashShortfall > 0) actions.push(`Cash to complete is about ${formatMoney(cashShortfall)} above the entered contribution cap.`);
   if (lmi > 0 && price > 0) {
     const extraTo80 = Math.max(0, finalLoan - price * 0.8);
@@ -314,12 +315,12 @@ export const buildOnePropertyRecommendations = ({
   }
   if (affordabilityRatio !== undefined && monthlyIncome > 0 && affordabilityRatio > 0.4) {
     const targetCut = Math.max(0, monthlyRepayment - monthlyIncome * 0.4);
-    actions.push(`Repayments are running above 40% of income. A safer target is roughly ${formatMoney(targetCut)} less per month.`);
+    actions.push(`Repayments are running above 40% of income. Reducing repayments by about ${formatMoney(targetCut)} per month would bring them to 40% of gross income; this is not a serviceability assessment.`);
   }
   if (bufferAfterHousing !== undefined && bufferAfterHousing < 0) actions.push(`Monthly buffer after mortgage and living costs is short by about ${formatMoney(Math.abs(bufferAfterHousing))}.`);
   if (useGuarantor) actions.push('Treat guarantor support as temporary and confirm release strategy with the lender.');
   if (maxPurchaseMode) actions.push('Maximum purchase mode should be treated as an outer limit, not the recommended target.');
-  if (!actions.length) actions.push('The current structure looks reasonably clean. Compare one step down in price or LVR to preserve comfort buffer.');
+  if (!actions.length) actions.push('Compare a lower purchase price or LVR and check the assumptions with a lender.');
   return actions;
 };
 
@@ -486,11 +487,15 @@ export const calcOneProperty = (inputs: OnePropertyInputs) => {
 
   const fhogBad = false;
   const firstHomeStatus = purchaseType !== 'FHOG' ? 'Not selected' : inputs.firstHomeReliefOptOut ? 'Not applied — buyer marked ineligible' : 'State rules applied where available; eligibility assumed';
+  const repaymentKnown = String(inputs.interestRate ?? '').trim() !== '' && rate >= 0 && years > 0;
   const monthlyRepaymentEquiv = repayment * periodsPerYear(frequency) / 12;
-  const affordabilityRatio = monthlyIncome > 0 ? monthlyRepaymentEquiv / monthlyIncome : undefined;
-  const bufferAfterHousing = monthlyIncome > 0 ? monthlyIncome - monthlyRepaymentEquiv - livingExpenses : undefined;
-
-  const incomplete = price <= 0 || appliedLvr <= 0;
+  const affordabilityRatio = repaymentKnown && monthlyIncome > 0 ? monthlyRepaymentEquiv / monthlyIncome : undefined;
+  const bufferAfterHousing = repaymentKnown && monthlyIncome > 0 ? monthlyIncome - monthlyRepaymentEquiv - livingExpenses : undefined;
+  const invalidAmounts = [inputs.maxPurchaseMode ? 0 : inputPrice, requestedLvr, approvalMax, maxCashContribution, rate, years, yearlyIncome, livingExpenses, extraPrincipal].some(value => value < 0);
+  const invalidLvr = requestedLvr > 1;
+  const purchaseTypeMissing = !inputs.purchaseType;
+  const cashLimitMissing = !!inputs.enableOopLimit && !inputs.maxPurchaseMode && maxCashContribution <= 0;
+  const incomplete = price <= 0 || appliedLvr <= 0 || invalidAmounts || invalidLvr || purchaseTypeMissing || cashLimitMissing;
   const scoredDeal = scoreOnePropertyScenario({
     maxPurchaseMode: inputs.maxPurchaseMode,
     fhogBad,
@@ -518,7 +523,7 @@ export const calcOneProperty = (inputs: OnePropertyInputs) => {
                 ? 'Maximum purchase solver'
                 : useGuarantor
                   ? 'Guarantor-assisted structure'
-                  : 'No obvious hard blocker';
+                  : 'Lender eligibility and serviceability not assessed';
 
   const recommendations = buildOnePropertyRecommendations({
     price,
@@ -539,7 +544,12 @@ export const calcOneProperty = (inputs: OnePropertyInputs) => {
   const bestNextMove = incomplete ? 'Enter a property price or maximum-price limits and a desired LVR.' : recommendations[0] ?? 'Review the structure against your policy, cash, and comfort settings.';
 
   const warnings: string[] = [];
-  let warningTone: AlertTone = 'good';
+  let warningTone: AlertTone = 'info';
+  if (purchaseTypeMissing) warnings.push('Select the purchase type to apply the appropriate duty assumptions.');
+  if (invalidAmounts) warnings.push('Enter non-negative amounts for the property, loan, income and expenses.');
+  if (invalidLvr) warnings.push('Enter a desired LVR no higher than 100%.');
+  if (cashLimitMissing) warnings.push('Enter available cash or turn off the option to limit price to available cash.');
+  if (requestedLvr > maxBaseLvr && !invalidLvr && !waiverLimitsLvr) warnings.push(`The model uses a maximum base LVR of ${formatPercent(maxBaseLvr)}; actual lender limits may differ.`);
   if (inputs.maxPurchaseMode) {
     warnings.push(modeNote || 'Maximum purchase price mode is active.');
     warningTone = 'info';
@@ -549,6 +559,7 @@ export const calcOneProperty = (inputs: OnePropertyInputs) => {
     warnings.push(`Desired LVR ${formatPercent(requestedLvr)} was reduced to ${formatPercent(appliedLvr)} to stay within the selected LMI waiver limit.`);
     warningTone = 'info';
   }
+  if (bufferAfterHousing !== undefined) warnings.push('Income figures are before tax and do not include all debts or expenses; this is not take-home cash flow or a serviceability assessment.');
   if (purchaseType === 'FHOG' && inputs.firstHomeReliefOptOut) warnings.push('First-home duty relief is switched off for this scenario.');
   if (purchaseType === 'FHOG' && !inputs.firstHomeReliefOptOut) warnings.push('First-home duty relief is applied where available, assuming all buyers qualify. Confirm conditions and transaction dates.');
   if (inputs.maxPurchaseMode && maxCashContribution <= 0 && approvalMax > 0) warnings.push('No cash budget was entered, so available deposit and costs have not limited this result.');
@@ -570,15 +581,15 @@ export const calcOneProperty = (inputs: OnePropertyInputs) => {
     warningTone = 'warn';
   }
   if (affordabilityRatio !== undefined && affordabilityRatio > 0.4) {
-    warnings.push('Repayment exceeds 40% of entered income, which is a heavy affordability load.');
+    warnings.push('Repayment exceeds 40% of entered gross income; review the full household budget.');
     warningTone = 'bad';
   } else if (affordabilityRatio !== undefined && affordabilityRatio > 0.3 && warningTone !== 'bad') {
-    warnings.push('Repayment exceeds 30% of entered income, so cash flow should be reviewed carefully.');
-    if (warningTone === 'good' || warningTone === 'info') warningTone = 'warn';
+    warnings.push('Repayment exceeds 30% of entered gross income; review the full household budget.');
+    if (warningTone === 'info') warningTone = 'warn';
   }
-  if (inputs.enableOopLimit) {
+  if (inputs.enableOopLimit && !inputs.maxPurchaseMode) {
     warnings.push(oopLimitStatus);
-    if ((cashShortfall > 0 || oop > maxCashContribution) && warningTone === 'good') warningTone = 'warn';
+    if ((cashShortfall > 0 || oop > maxCashContribution) && warningTone === 'info') warningTone = 'warn';
   } else if (maxCashContribution > 0) {
     warnings.push(oopLimitStatus);
   }
@@ -600,7 +611,7 @@ export const calcOneProperty = (inputs: OnePropertyInputs) => {
       'Scenario Description': inputs.maxPurchaseMode
         ? `${PURCHASE_TYPES[purchaseType].description} Maximum purchase price mode is currently active.`
         : PURCHASE_TYPES[purchaseType].description,
-      'Maximum Purchase Price': price > 0 ? formatMoney(maxPurchasePrice || price) : '-',
+      'Maximum Purchase Price': price > 0 ? formatMoney(price) : '-',
       'Stamp Duty': formatMoney(sd),
       'Transfer Fees': formatMoney(transferFees),
       'LMI Costs': formatMoney(lmi),
@@ -617,35 +628,35 @@ export const calcOneProperty = (inputs: OnePropertyInputs) => {
       'Base Loan-to-Value Ratio': formatPercent(baseLvr),
       'Total Loan Amount + LMI': formatMoney(loanPlusLmi),
       'Effective LVR Including LMI': formatPercent(effectiveLvr),
-      'Principal & Interest Repayment': formatMoney(repayment),
-      'Interest Portion of Repayment': formatMoney(interest),
-      'Repayment as % of Income': affordabilityRatio !== undefined ? formatPercent(affordabilityRatio) : '-',
-      'Affordability Stress': affordabilityRatio === undefined ? 'Not enough income entered'
-        : affordabilityRatio <= 0.30 ? 'Green - comfortable'
-        : affordabilityRatio <= 0.40 ? 'Amber - stretching'
-        : 'Red - affordability pressure',
-      'Monthly Buffer After Mortgage + Living': bufferAfterHousing !== undefined ? formatSignedMoney(bufferAfterHousing) : '-',
+      'Principal & Interest Repayment': repaymentKnown ? formatMoney(repayment) : 'Enter rate and term',
+      'Interest Portion of Repayment': repaymentKnown ? formatMoney(interest) : 'Enter rate and term',
+      'Repayment as % of gross income': affordabilityRatio !== undefined ? formatPercent(affordabilityRatio) : '-',
+      'Repayment-to-gross-income indicator': affordabilityRatio === undefined ? 'Enter income, interest rate and term'
+        : affordabilityRatio <= 0.30 ? 'Up to 30% of gross income'
+        : affordabilityRatio <= 0.40 ? '30–40% of gross income'
+        : 'Above 40% of gross income',
+      'Gross monthly income less repayment and entered living costs (before tax)': bufferAfterHousing !== undefined ? formatSignedMoney(bufferAfterHousing) : '-',
       'Main Limiting Factor': whyLimit,
       'Best Next Move': bestNextMove,
       'OOP Limit Status': oopLimitStatus,
-      'Total Yearly Expenses': formatMoney(yearlyExpenses),
-      'Repayment @ 4.5%': formatMoney(periodicPayment(loanPlusLmi, 4.5, years, frequency)),
-      'Repayment @ 5.5%': formatMoney(periodicPayment(loanPlusLmi, 5.5, years, frequency)),
-      'Repayment @ 6.5%': formatMoney(periodicPayment(loanPlusLmi, 6.5, years, frequency)),
+      'Total Yearly Expenses': repaymentKnown ? formatMoney(yearlyExpenses) : 'Enter rate and term',
+      'Repayment @ 4.5%': years > 0 ? formatMoney(periodicPayment(loanPlusLmi, 4.5, years, frequency)) : 'Enter loan term',
+      'Repayment @ 5.5%': years > 0 ? formatMoney(periodicPayment(loanPlusLmi, 5.5, years, frequency)) : 'Enter loan term',
+      'Repayment @ 6.5%': years > 0 ? formatMoney(periodicPayment(loanPlusLmi, 6.5, years, frequency)) : 'Enter loan term',
     },
     atAGlance: [
       { label: inputs.maxPurchaseMode ? 'Maximum purchase price' : 'Property price', value: price > 0 ? formatMoney(price) : '-', tone: 'info' as AlertTone },
-      { label: 'Out of pocket', value: formatMoney(oop), tone: maxCashContribution > 0 && oop > maxCashContribution ? 'warn' : 'good' as AlertTone },
+      { label: 'Out of pocket', value: formatMoney(oop), tone: maxCashContribution > 0 && oop > maxCashContribution ? 'warn' : 'info' as AlertTone },
       { label: 'Loan amount', value: formatMoney(finalLoan), tone: 'info' as AlertTone },
       { label: 'Effective LVR', value: formatPercent(effectiveLvr), tone: toneFromLvr(effectiveLvr) },
       { label: 'Structure', value: deal.text, tone: deal.tone as AlertTone },
-      { label: `Repayment / ${paymentLabel(frequency)}`, value: rate > 0 && years > 0 ? formatMoney(repayment) : 'Enter rate and term', tone: affordabilityRatio !== undefined && affordabilityRatio > 0.4 ? 'bad' : affordabilityRatio !== undefined && affordabilityRatio > 0.3 ? 'warn' : 'good' as AlertTone },
+      { label: `Repayment / ${paymentLabel(frequency)}`, value: repaymentKnown ? formatMoney(repayment) : 'Enter rate and term', tone: affordabilityRatio !== undefined && affordabilityRatio > 0.4 ? 'bad' : affordabilityRatio !== undefined && affordabilityRatio > 0.3 ? 'warn' : 'info' as AlertTone },
     ],
     decisionGuide: [
       { label: 'Why this result', value: whyLimit },
       { label: 'Best next move', value: bestNextMove },
       { label: 'LVR position', value: `${formatPercent(baseLvr)} base / ${formatPercent(effectiveLvr)} effective` },
-      { label: 'Monthly cash buffer', value: bufferAfterHousing !== undefined ? formatSignedMoney(bufferAfterHousing) : '-' },
+      { label: 'Gross income less entered costs (before tax)', value: bufferAfterHousing !== undefined ? formatSignedMoney(bufferAfterHousing) : '-' },
     ],
   };
 };

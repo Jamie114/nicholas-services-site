@@ -4,6 +4,9 @@ import { supabase, supabaseEnabled, type AuthUser } from './supabaseClient';
 import { jsPDF } from 'jspdf';
 import { AUSTRALIAN_STATES, type AustralianState, type HomeKind } from './duty';
 import './styles.css';
+import PublicWebsite from './PublicWebsite';
+import CalculatorsPage from './CalculatorsPage';
+import { SITE_CONFIG } from './site-config';
 import {
   DEFAULTS,
   DISCLAIMER,
@@ -108,7 +111,7 @@ const field = <T extends string | boolean>(
   return (
     <label className="field">
       <span>{label}</span>
-      <input type={type} value={String(value)} onChange={(e) => onChange(e.target.value as T)} />
+      <input type={type} min={type === 'number' ? 0 : undefined} step={type === 'number' ? 'any' : undefined} inputMode={type === 'number' ? 'decimal' : undefined} value={String(value)} onChange={(e) => onChange(e.target.value as T)} />
     </label>
   );
 };
@@ -148,7 +151,7 @@ function Banner({ tone, lines }: { tone: AlertTone; lines: string[] }) {
   return (
     <div className={`banner ${tone}`}>
       <div>{lines[0]}</div>
-      {lines.length > 1 && <div className="banner-sub">{lines.slice(1).join(' • ')}</div>}
+      {lines.length > 1 && <ul className="banner-list">{lines.slice(1).map((line, index) => <li key={index}>{line}</li>)}</ul>}
     </div>
   );
 }
@@ -195,6 +198,7 @@ function Actions({
   onLoadTab,
   onPdf,
   onResetTab,
+  resultsReady = true,
   compareLabel,
   onCompare,
 }: {
@@ -202,16 +206,17 @@ function Actions({
   onLoadTab: () => void;
   onPdf: () => void;
   onResetTab: () => void;
+  resultsReady?: boolean;
   compareLabel: string;
   onCompare: (slot: CompareSlot) => void;
 }) {
   return (
     <div className="button-row">
-      <button onClick={() => onCompare('A')}>Save to Compare A</button>
-      <button className="secondary" onClick={() => onCompare('B')}>
+      <button disabled={!resultsReady} onClick={() => onCompare('A')}>Save to Compare A</button>
+      <button className="secondary" disabled={!resultsReady} onClick={() => onCompare('B')}>
         Save to Compare B
       </button>
-      <button className="secondary" onClick={() => onCompare('C')}>
+      <button className="secondary" disabled={!resultsReady} onClick={() => onCompare('C')}>
         Save to Compare C
       </button>
       <button className="secondary" onClick={onSaveTab}>
@@ -220,13 +225,13 @@ function Actions({
       <button className="secondary" onClick={onLoadTab}>
         Load this tab
       </button>
-      <button className="secondary" onClick={onPdf}>
-        Export PDF this tab
+      <button className="secondary" onClick={onPdf} disabled={!resultsReady}>
+        Export PDF
       </button>
       <button className="secondary" onClick={onResetTab}>
         Reset tab
       </button>
-      <span className="toolbar-note">{compareLabel}</span>
+      <span className="toolbar-note">{resultsReady ? compareLabel : 'Complete the required inputs to export or compare.'}</span>
     </div>
   );
 }
@@ -333,6 +338,8 @@ function App() {
     }
   });
   const [tab, setTab] = useState<TabKey>('one');
+  const [showPublicWebsite, setShowPublicWebsite] = useState(true);
+  const [authReady, setAuthReady] = useState(!supabaseEnabled);
   const [startupStep, setStartupStep] = useState<StartupStep>('auth');
   const [profiles, setProfiles] = useState<SavedProfile[]>(() => getStoredProfiles());
   const [profileNameDraft, setProfileNameDraft] = useState(state.caseName || '');
@@ -348,6 +355,16 @@ function App() {
   const [activeCaseId, setActiveCaseId] = useState<string | null>(null);
   const [activeCaseOwnerId, setActiveCaseOwnerId] = useState<string | null>(null);
   const [activeAccessLevel, setActiveAccessLevel] = useState<AccessLevel | null>(null);
+
+  const isCalculatorsPage = typeof window !== 'undefined' && /^\/calculators\/?$/.test(window.location.pathname);
+  useEffect(() => { document.title = isCalculatorsPage ? `Calculators | ${SITE_CONFIG.businessName}` : `${SITE_CONFIG.businessName} | Home Loans & Mortgage Broking`; }, [isCalculatorsPage]);
+  useEffect(() => {
+    if (!showPublicWebsite) return;
+    const anchor = window.location.hash.slice(1);
+    if (!anchor || anchor.startsWith('calculator-') || anchor === 'broker-login') return;
+    const frame = window.requestAnimationFrame(() => document.getElementById(anchor)?.scrollIntoView());
+    return () => window.cancelAnimationFrame(frame);
+  }, [showPublicWebsite, isCalculatorsPage]);
 
 
   useEffect(() => {
@@ -531,6 +548,7 @@ function App() {
       if (!active) return;
       if (event !== 'INITIAL_SESSION' && event !== 'SIGNED_IN' && event !== 'SIGNED_OUT') return;
       const user = session?.user ?? null;
+      setAuthReady(true);
       if (event === 'SIGNED_IN' && user && authUserIdRef.current === user.id) return;
       const request = ++generation;
       if (timer) clearTimeout(timer);
@@ -604,7 +622,7 @@ function App() {
 
   const handleAuthSubmit = async () => {
     if (!supabaseEnabled) {
-      setAuthMessage('Supabase is not configured yet. Use guest mode for tonight or add the VITE_SUPABASE_* values and redeploy.');
+      setAuthMessage('Supabase is not configured yet. Use the calculators as a guest or check the account configuration.');
       return;
     }
     const email = authEmail.trim();
@@ -635,10 +653,51 @@ function App() {
     setActiveCaseOwnerId(null);
     setActiveAccessLevel(null);
     setStorageMode('local');
-    setState((prev) => ({ ...prev, meta: { ...prev.meta, brokerName: 'Guest' } }));
+    setState((prev) => {
+      if (prev.meta.brokerName === 'Guest') return prev;
+      // Keep a recovery copy and avoid showing a previous broker's case to a guest on this browser.
+      try { localStorage.setItem(`${STORAGE_KEY}-previous-workspace`, JSON.stringify(prev)); } catch { /* storage may be unavailable */ }
+      const fresh = blankState();
+      fresh.meta.brandName = SITE_CONFIG.businessName;
+      fresh.meta.brokerName = 'Guest';
+      return fresh;
+    });
     setProfileSearch('');
     setStartupStep('ready');
   };
+
+  const openPublicCalculator = (key: 'one' | 'two' | 'refi' | 'borrow', navigate = true) => {
+    if (!authReady) return;
+    if (navigate) window.history.pushState(null, '', `#calculator-${key}`);
+    setShowPublicWebsite(false);
+    setTab(key);
+    if (currentUser) setStartupStep('ready');
+    else continueAsGuest();
+    window.scrollTo({ top: 0, behavior: 'auto' });
+  };
+  const openBrokerSignIn = (navigate = true) => {
+    if (!authReady) return;
+    if (navigate) window.history.pushState(null, '', '#broker-login');
+    setShowPublicWebsite(false);
+    setStartupStep(currentUser ? 'brokerMenu' : 'auth');
+    window.scrollTo({ top: 0, behavior: 'auto' });
+  };
+
+
+  useEffect(() => {
+    if (!authReady) return;
+    const syncPageWithAddress = () => {
+      const hash = window.location.hash;
+      const tool = hash.match(/^#calculator-(one|two|refi|borrow)$/)?.[1] as 'one' | 'two' | 'refi' | 'borrow' | undefined;
+      if (tool) openPublicCalculator(tool, false);
+      else if (hash === '#broker-login') openBrokerSignIn(false);
+      else setShowPublicWebsite(true);
+    };
+    syncPageWithAddress();
+    window.addEventListener('popstate', syncPageWithAddress);
+    return () => window.removeEventListener('popstate', syncPageWithAddress);
+  }, [authReady, currentUser?.id]);
+
 
   const createNewCase = () => {
     const brokerName = currentProfile?.full_name?.trim() || (currentUser ? brokerNameFromUser(currentUser) : state.meta.brokerName || 'Guest');
@@ -942,6 +1001,7 @@ function App() {
 
 
   const signOutOrChangeAccount = async () => {
+    window.history.replaceState(null, '', '#broker-login');
     setProfileSearch('');
     if (supabaseEnabled && currentUser) {
       const { error } = await supabase.auth.signOut();
@@ -1027,7 +1087,7 @@ function App() {
       doc.setFontSize(8);
       doc.setTextColor(100, 116, 139);
       doc.text(`Page ${page}`, right, 292, { align: 'right' });
-      doc.text(state.meta.brandName || 'XYZ Finance Specialists', left, 292);
+      doc.text(state.meta.brandName || SITE_CONFIG.businessName, left, 292);
     };
 
     const addHeader = (firstPage = true) => {
@@ -1036,7 +1096,7 @@ function App() {
       doc.setTextColor(255, 255, 255);
       doc.setFont('helvetica', 'bold');
       doc.setFontSize(firstPage ? 18 : 14);
-      doc.text(state.meta.brandName || 'XYZ Finance Specialists', left + 6, y + (firstPage ? 4 : 1));
+      doc.text(state.meta.brandName || SITE_CONFIG.businessName, left + 6, y + (firstPage ? 4 : 1));
       doc.setFont('helvetica', 'normal');
       doc.setFontSize(10);
       doc.text(`Broker: ${state.meta.brokerName || 'Jamie'}`, right - 6, y + (firstPage ? 4 : 1), { align: 'right' });
@@ -1247,7 +1307,7 @@ function App() {
             <label className={`mode-option ${!state.one.maxPurchaseMode ? 'selected' : ''}`}><input type="radio" name="purchase-mode" checked={!state.one.maxPurchaseMode} onChange={() => patchOne('maxPurchaseMode', false)} /><span><strong>Estimate a property</strong><small>I have a purchase price in mind</small></span></label>
             <label className={`mode-option ${state.one.maxPurchaseMode ? 'selected' : ''}`}><input type="radio" name="purchase-mode" checked={state.one.maxPurchaseMode} onChange={() => patchOne('maxPurchaseMode', true)} /><span><strong>Find maximum price</strong><small>Work backwards from my limits</small></span></label>
           </fieldset>
-          {state.one.maxPurchaseMode && <p className="helper-note">Enter your desired LVR and at least a cash budget or loan approval limit. For a more useful estimate, enter both.</p>}
+          {state.one.maxPurchaseMode && <p className="helper-note">Enter your desired LVR and at least a cash budget or loan approval limit. Entering both gives a fuller estimate; lending approval and serviceability are not assessed.</p>}
           <div className="section-heading"><span>01</span><div><h3>The property</h3><p>Tell us what you are buying.</p></div></div>
           <div className="field-grid">
             {field('Scenario name (optional)', state.one.scenarioName, (v) => patchOne('scenarioName', v as string))}
@@ -1276,7 +1336,7 @@ function App() {
           {state.one.lmiExempt && state.one.lmiBasis !== '5% Deposit Scheme' && <p className="helper-note" role="status">{oneCalc.invalidWaiverCap ? 'Enter a waiver maximum LVR between 0% and 100% to calculate this scenario.' : oneCalc.waiverLimitsLvr ? `Your desired LVR stays at ${oneCalc.outputs['Requested LVR']}; this scenario uses ${oneCalc.outputs['Applied / Capped LVR']} to stay within the waiver limit.` : 'The calculation stays within the waiver maximum. Turn off the waiver to explore a higher LVR with estimated LMI.'}</p>}
           <div className="section-heading"><span>03</span><div><h3>Income and extras</h3><p>Optional details for a fuller picture.</p></div></div>
           <div className="field-grid">
-            {field('Yearly income ($)', state.one.yearlyIncome, (v) => patchOne('yearlyIncome', v as string), 'number')}
+            {field('Gross yearly income before tax ($)', state.one.yearlyIncome, (v) => patchOne('yearlyIncome', v as string), 'number')}
             {field('Monthly living expenses ($)', state.one.livingExpensesMonthly, (v) => patchOne('livingExpensesMonthly', v as string), 'number')}
           </div>
           <div className="checkbox-grid">
@@ -1284,7 +1344,7 @@ function App() {
             {!state.one.maxPurchaseMode && <label className="check-field"><input type="checkbox" checked={state.one.enableOopLimit} onChange={(e) => patchOne('enableOopLimit', e.target.checked)} /> Limit price to available cash</label>}
             {state.one.state === 'NT' && state.one.purchaseType !== 'Investment' && state.one.homeKind === 'New' && <label className="check-field"><input type="checkbox" checked={!!state.one.ntPackageEligible} onChange={(e) => patchOne('ntPackageEligible', e.target.checked)} /> Apply eligible NT house-and-land package exemption</label>}
           </div>
-          <p className="muted scenario-note">Duty estimates use standard residential rules as at 2 November 2026. Check eligibility and dates; land, mixed eligibility, foreign surcharges and special concessions need separate assessment. Confirm any LMI waiver with the lender and check the scheme postcode and valuation.</p>
+          <p className="muted scenario-note">Estimates include an assumed $2,000 in transfer fees and an indicative LMI estimate; actual costs vary. Duty uses standard residential rules as at 2 November 2026. Check eligibility and dates; land, mixed eligibility, foreign surcharges and special concessions need separate assessment. Confirm any LMI waiver with the lender and check the scheme postcode and valuation.</p>
           <Actions
             onSaveTab={() => saveTab('one')}
             onLoadTab={() => loadTab('one')}
@@ -1301,6 +1361,7 @@ function App() {
                   .map(([label, value]) => ({ label, value })),
               })
             }
+            resultsReady={oneCalc.isComplete}
             onResetTab={() => patch('one', { ...DEFAULTS.oneProperty })}
             compareLabel={oneCalc.deal.text}
             onCompare={(slot) => saveCompare(slot, '1 Property', compareRows)}
@@ -1312,7 +1373,7 @@ function App() {
           <Banner tone={oneCalc.warningTone} lines={oneCalc.warnings} />
           {oneCalc.isComplete ? <><MetricSection title="At a Glance" items={oneCalc.atAGlance} />
           <DetailSection title="Decision Guide" rows={oneCalc.decisionGuide} />
-          <details className="results-details"><summary>View all calculated results</summary><DetailSection title="All Calculated Results" rows={Object.entries(oneCalc.outputs).map(([label, value]) => ({ label, value }))} /></details></> : <p className="helper-note">{oneCalc.invalidWaiverCap ? 'Enter a valid maximum LVR for the waiver to see an estimate.' : 'Your estimate will appear here once you add a desired LVR and a property price or maximum-price limit.'}</p>}
+          <details className="results-details"><summary>View all calculated results</summary><DetailSection title="All Calculated Results" rows={Object.entries(oneCalc.outputs).map(([label, value]) => ({ label, value }))} /></details></> : <p className="helper-note">{oneCalc.invalidWaiverCap ? 'Enter a valid maximum LVR for the waiver to see an estimate.' : 'Select a purchase type and enter a desired LVR and a property price or maximum-price limit.'}</p>}
         </section>
       </div>
     );
@@ -1375,6 +1436,7 @@ function App() {
                   .map(([label, value]) => ({ label, value })),
               })
             }
+            resultsReady={twoCalc.isComplete}
             onResetTab={() => patch('two', { ...DEFAULTS.twoProperties })}
             compareLabel={twoCalc.deal.text}
             onCompare={(slot) => saveCompare(slot, '2 Properties', compareRows)}
@@ -1446,6 +1508,7 @@ function App() {
                   .map(([label, value]) => ({ label, value })),
               })
             }
+            resultsReady={refiCalc.isComplete}
             onResetTab={() => patch('refi', { ...DEFAULTS.refinance })}
             compareLabel={refiCalc.deal.text}
             onCompare={(slot) => saveCompare(slot, 'Refinance', compareRows)}
@@ -1519,6 +1582,7 @@ function App() {
                   .map(([label, value]) => ({ label, value })),
               })
             }
+            resultsReady={borrowCalc.isComplete}
             onResetTab={() => patch('borrow', { ...DEFAULTS.borrowing })}
             compareLabel={borrowCalc.deal.text}
             onCompare={(slot) => saveCompare(slot, 'Borrowing Capacity', compareRows)}
@@ -1643,12 +1707,9 @@ function App() {
         )}
       </section>
       <section className="panel">
-        <h2>Deployment notes</h2>
-        <ul className="feature-list">
-          <li>For cloud sign-in, add <code>VITE_SUPABASE_URL</code> and <code>VITE_SUPABASE_ANON_KEY</code> to your local <code>.env</code> and your host.</li>
-          <li>Run the included SQL script once in Supabase to create the <code>profiles</code>, <code>broker_cases</code>, and <code>case_access</code> tables and policies.</li>
-          <li>Guest mode still works locally if Supabase is not configured yet.</li>
-        </ul>
+        <h2>Using this workspace</h2>
+        <p className="muted">Calculator results are indicative and can change when the inputs or assumptions change.</p>
+        <ul className="feature-list"><li>Save a whole file to keep a copy on your device.</li><li>Signed-in users can access their permitted cloud cases.</li><li>Guest calculations remain in this browser and are not saved to a cloud profile.</li></ul>
         {authMessage && <p className="muted">{authMessage}</p>}
         <p className="muted">{DISCLAIMER}</p>
       </section>
@@ -1656,12 +1717,17 @@ function App() {
   );
 
 
+  if (showPublicWebsite) return isCalculatorsPage
+    ? <CalculatorsPage onOpenCalculator={openPublicCalculator} onBrokerSignIn={() => openBrokerSignIn()} authReady={authReady} />
+    : <PublicWebsite onBrokerSignIn={() => openBrokerSignIn()} authReady={authReady} />;
+
   return (
     <div className="app-shell">
+      <button className="website-return" onClick={() => { window.history.pushState(null, '', isCalculatorsPage ? '/calculators/#top' : '/#top'); setShowPublicWebsite(true); window.scrollTo({ top: 0, behavior: 'auto' }); }}>← {isCalculatorsPage ? 'Back to calculators' : 'Back to website'}</button>
       <header className="topbar">
         <div>
           <div className="eyebrow">Mortgage workflow dashboard</div>
-          <h1>{state.meta.brandName || 'XYZ Finance Specialists'}</h1>
+          <h1>{state.meta.brandName || SITE_CONFIG.businessName}</h1>
           <p>Explore lending scenarios, compare options and prepare client summaries.</p>
         </div>
         <div className="header-badge">{currentUser?.email ? `Signed in: ${currentUser.email}` : `Broker: ${state.meta.brokerName || '—'}`}</div>
@@ -1693,7 +1759,7 @@ function App() {
                 <div className="eyebrow">Secure access</div>
                 <h2>Sign in to unlock cloud-saved cases</h2>
                 <p>
-                  Use your invited broker credentials to sign in. Guest mode is still available for demos, but public sign-up is disabled.
+                  Sign in with your invited account to access cloud-saved cases. The calculators are available without signing in.
                 </p>
                 <label className="field startup-field">
                   <span>Email</span>
@@ -1729,7 +1795,7 @@ function App() {
                 {authMessage && <p className="muted">{authMessage}</p>}
                 {!supabaseEnabled && (
                   <p className="muted">
-                    Supabase env vars are missing. Add them before deploying if you want real sign-in tonight.
+                    Account sign-in is not configured on this version of the website.
                   </p>
                 )}
               </>
